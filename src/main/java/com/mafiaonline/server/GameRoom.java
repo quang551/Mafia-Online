@@ -11,11 +11,6 @@ public class GameRoom {
     private boolean gameStarted = false;
     private GameState state = GameState.LOBBY;
 
-    // Day 4 – lưu hành động ban đêm (mafia/doctor/detective)
-    private final Map<String, String> nightActions = new HashMap<>();
-    // Day 4 – lưu vote ban ngày
-    private final Map<String, String> dayVotes = new HashMap<>();
-
     public GameRoom() {
         this.phaseManager = new PhaseManager(this);
     }
@@ -50,6 +45,7 @@ public class GameRoom {
         if (removed != null) {
             System.out.println("[GameRoom] Player removed: " + removed.getName());
             broadcast("📤 Người chơi " + name + " đã rời phòng.");
+            checkWinCondition();
         }
     }
 
@@ -67,7 +63,7 @@ public class GameRoom {
         System.out.println("[GameRoom] State -> " + newState);
     }
 
-    // ---------- Start game & assign roles (Day 3) ----------
+    // ---------- Start game & assign roles ----------
     public synchronized void startGame() {
         if (gameStarted) {
             broadcast("⚠️ Game đã bắt đầu.");
@@ -81,15 +77,47 @@ public class GameRoom {
         gameStarted = true;
         state = GameState.DAY;
 
-        // Assign roles
-        List<Role> pool = new ArrayList<>();
-        pool.add(Role.MAFIA); // đảm bảo có mafia
-        List<Role> extras = Arrays.asList(Role.DOCTOR, Role.DETECTIVE, Role.BODYGUARD, Role.JESTER, Role.VILLAGER);
-        int idx = 0;
-        while (pool.size() < players.size()) {
-            pool.add(extras.get(idx % extras.size()));
-            idx++;
-        }
+        // Build role pool hợp lý theo số người chơi
+List<Role> pool = new ArrayList<>();
+int playerCount = players.size();
+
+// Xác định số Mafia (5–6: 1 mafia, 7–8: 2 mafia, 9–10: 3 mafia)
+int mafiaCount = 1;
+if (playerCount >= 7) mafiaCount = 2;
+if (playerCount >= 9) mafiaCount = 3;
+
+// Thêm Mafia
+for (int i = 0; i < mafiaCount; i++) {
+    pool.add(Role.MAFIA);
+}
+
+// Thêm các vai đặc biệt (tối đa 1 mỗi loại, nếu còn slot)
+if (pool.size() < playerCount) pool.add(Role.DOCTOR);
+if (pool.size() < playerCount) pool.add(Role.DETECTIVE);
+if (pool.size() < playerCount) pool.add(Role.BODYGUARD);
+if (pool.size() < playerCount) pool.add(Role.JESTER);
+
+// Các slot còn lại là Dân làng
+while (pool.size() < playerCount) {
+    pool.add(Role.VILLAGER);
+}
+
+// Trộn ngẫu nhiên danh sách role
+Collections.shuffle(pool);
+Iterator<Role> it = pool.iterator();
+for (Player p : players.values()) {
+    Role r = it.next();
+    p.setRole(r);
+    PlayerHandler h = p.getHandler();
+    if (h != null) {
+        h.setRole(r);
+        h.sendMessage("🎭 Role của bạn: " + r + " — " + r.getDescription());
+    } else {
+        System.out.println("[GameRoom] " + p.getName() + " assigned role " + r);
+    }
+}
+
+
         Collections.shuffle(pool);
         Iterator<Role> it = pool.iterator();
         for (Player p : players.values()) {
@@ -98,73 +126,29 @@ public class GameRoom {
             PlayerHandler h = p.getHandler();
             if (h != null) {
                 h.setRole(r);
-                h.sendMessage("🎭 Bạn được gán role: " + r + " — " + r.getDescription());
+                h.sendMessage("🎭 Role của bạn: " + r + " — " + r.getDescription());
             } else {
                 System.out.println("[GameRoom] " + p.getName() + " assigned role " + r);
             }
         }
 
-        broadcast("✅ Trò chơi bắt đầu! Roles đã được phân phối. Hiện là Pha DAY.");
+        broadcast("✅ Trò chơi đã bắt đầu! Roles đã được phân phối. Hiện là Pha DAY.");
         System.out.println("=== Role assignment ===");
         for (Player p : players.values()) System.out.println(" - " + p.getName() + " -> " + p.getRole());
+
+        // start day phase
+        phaseManager.startDay();
     }
 
-    // ---------- Day/Night cycle (Day 4) ----------
-    public synchronized void startDay() {
-        state = GameState.DAY;
-        dayVotes.clear();
-        broadcast("🌞 Một ngày mới bắt đầu! Mọi người hãy thảo luận và bỏ phiếu.");
-    }
+    // ---------- wrappers to PhaseManager ----------
+    public synchronized void startDayPhase() { phaseManager.startDay(); }
+    public synchronized void endDayPhase() { phaseManager.endDay(); }
+    public synchronized void castVote(String voter, String target) { phaseManager.castVote(voter, target); }
+    public synchronized void startNightPhase() { phaseManager.startNight(); }
+    public synchronized void endNightPhase() { phaseManager.endNight(); }
+    public synchronized void recordNightAction(String actor, String target) { phaseManager.recordNightAction(actor, target); }
 
-    public synchronized void endDay() {
-        state = GameState.NIGHT;
-        // Tính toán phiếu
-        if (!dayVotes.isEmpty()) {
-            String target = calculateVoteResult(dayVotes);
-            if (target != null) {
-                killPlayer(target);
-                broadcast("🗳️ Người chơi " + target + " đã bị treo cổ!");
-            } else {
-                broadcast("🗳️ Không ai bị treo cổ hôm nay.");
-            }
-        } else {
-            broadcast("🗳️ Không ai bỏ phiếu hôm nay.");
-        }
-        startNight();
-    }
-
-    public synchronized void startNight() {
-        state = GameState.NIGHT;
-        nightActions.clear();
-        broadcast("🌙 Đêm xuống! Mafia và các role đặc biệt hãy hành động.");
-    }
-
-    public synchronized void endNight() {
-        // xử lý nightActions
-        if (!nightActions.isEmpty()) {
-            resolveNightActions();
-        } else {
-            broadcast("🌙 Đêm trôi qua yên bình, không có ai chết.");
-        }
-        startDay();
-    }
-
-    // ---------- Record actions (Day 4) ----------
-    public synchronized void recordNightAction(String actor, String target) {
-        if (!players.containsKey(actor) || !players.containsKey(target)) return;
-        if (!players.get(actor).isAlive()) return;
-        nightActions.put(actor, target);
-        System.out.println("[GameRoom] " + actor + " chọn " + target + " ban đêm.");
-    }
-
-    public synchronized void castVote(String voter, String target) {
-        if (!players.containsKey(voter) || !players.containsKey(target)) return;
-        if (!players.get(voter).isAlive()) return;
-        dayVotes.put(voter, target);
-        broadcast("🗳️ " + voter + " đã vote treo " + target + ".");
-    }
-
-    // ---------- Kill & Win condition ----------
+    // ---------- Kill & Win ----------
     public synchronized void killPlayer(String name) {
         Player p = players.get(name);
         if (p != null && p.isAlive()) {
@@ -204,40 +188,22 @@ public class GameRoom {
         broadcast("🏁 Trò chơi kết thúc.");
     }
 
-    // ---------- Helpers ----------
-    private String calculateVoteResult(Map<String, String> votes) {
-        Map<String, Long> counts = votes.values().stream()
-                .collect(Collectors.groupingBy(v -> v, Collectors.counting()));
-        return counts.entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey).orElse(null);
+    // ---------------- small helpers ----------------
+    public synchronized boolean isAlive(String name) {
+        Player p = players.get(name);
+        return p != null && p.isAlive();
     }
 
-    private void resolveNightActions() {
-        // xử lý đơn giản: mafia giết, doctor cứu
-        Set<String> mafiaTargets = new HashSet<>();
-        Set<String> saved = new HashSet<>();
-
-        for (Map.Entry<String, String> e : nightActions.entrySet()) {
-            Player actor = players.get(e.getKey());
-            String target = e.getValue();
-            if (actor.getRole() == Role.MAFIA) {
-                mafiaTargets.add(target);
-            } else if (actor.getRole() == Role.DOCTOR) {
-                saved.add(target);
-            }
-        }
-
-        for (String t : mafiaTargets) {
-            if (!saved.contains(t)) {
-                killPlayer(t);
-                broadcast("🌙 Ban đêm, " + t + " đã bị giết!");
-            } else {
-                broadcast("🌙 " + t + " đã bị tấn công nhưng được cứu!");
-            }
-        }
+    public synchronized void privateMessage(String name, String msg) {
+        sendToPlayer(name, msg);
     }
 
+    public synchronized Role getPlayerRole(String name) {
+        Player p = players.get(name);
+        return (p != null) ? p.getRole() : null;
+    }
+
+    // ---------- messaging ----------
     public synchronized void sendToPlayer(String name, String msg) {
         PlayerHandler h = handlers.get(name);
         if (h != null) h.sendMessage(msg);

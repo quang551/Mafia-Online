@@ -3,42 +3,45 @@ package com.mafiaonline.server;
 import java.io.*;
 import java.net.Socket;
 
+/**
+ * Handle one client connection.
+ * Commands (start with '/'):
+ *  /start, /vote <name>, /endday, /kill <name>, /save <name>, /investigate <name>, /protect <name>,
+ *  /players, /role, /quit
+ * Chat: any line not starting with '/'
+ */
 public class PlayerHandler extends Thread {
     private final Socket socket;
     private final GameRoom room;
     private PrintWriter out;
     private BufferedReader in;
     private String playerName;
-    private Role role;
+    private Role role = Role.UNASSIGNED;
 
     public PlayerHandler(Socket socket, GameRoom room) {
         this.socket = socket;
         this.room = room;
     }
 
-    public void setRole(Role role) { this.role = role; }
-    public Role getRole() { return role; }
-
-    public void sendMessage(String msg) {
-        if (out != null) out.println(msg);
-    }
-
     @Override
     public void run() {
         try {
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new PrintWriter(socket.getOutputStream(), true);
-            in  = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            out.println("👉 Nhập tên của bạn:");
-            playerName = in.readLine();
-            if (playerName == null || playerName.trim().isEmpty()) {
-                playerName = "Player" + System.currentTimeMillis()%10000;
+            out.println("=== Mafia-Online Server ===");
+            out.println("Nhập tên của bạn:");
+            String name = in.readLine();
+            if (name == null || name.trim().isEmpty()) {
+                out.println("Tên không hợp lệ. Đóng kết nối.");
+                socket.close();
+                return;
             }
-            playerName = playerName.trim();
+            playerName = name.trim();
 
             room.addPlayer(playerName, this);
-            // set handler in Player object is done in GameRoom.addPlayer
-            out.println("Chào " + playerName + "! Viết tin nhắn để chat. Dùng lệnh /help để xem lệnh.");
+            out.println("✅ Bạn đã vào phòng với tên: " + playerName);
+            room.broadcast("👤 " + playerName + " đã tham gia phòng.");
 
             String line;
             while ((line = in.readLine()) != null) {
@@ -46,102 +49,99 @@ public class PlayerHandler extends Thread {
                 if (line.isEmpty()) continue;
 
                 if (line.startsWith("/")) {
-                    handleCommand(line);
+                    String[] parts = line.split("\\s+", 2);
+                    String cmd = parts[0].toLowerCase();
+                    String arg = parts.length > 1 ? parts[1].trim() : "";
+
+                    switch (cmd) {
+                        case "/start":
+                            room.startGame();
+                            break;
+                        case "/startday":
+                        case "/day":
+                            room.startDayPhase();
+                            break;
+                        case "/endday":
+                            room.endDayPhase();
+                            break;
+                        case "/startnight":
+                        case "/night":
+                            room.startNightPhase();
+                            break;
+                        case "/endnight":
+                            room.endNightPhase();
+                            break;
+                        case "/vote":
+                            if (arg.isEmpty()) sendMessage("❌ Cú pháp: /vote <tên>");
+                            else room.castVote(playerName, arg);
+                            break;
+                        case "/kill":
+                            if (arg.isEmpty()) sendMessage("❌ Cú pháp: /kill <tên>");
+                            else {
+                                if (getRole() == Role.MAFIA) room.recordNightAction(playerName, arg);
+                                else sendMessage("❌ Chỉ Mafia mới có thể dùng /kill.");
+                            }
+                            break;
+                        case "/save":
+                            if (arg.isEmpty()) sendMessage("❌ Cú pháp: /save <tên>");
+                            else {
+                                if (getRole() == Role.DOCTOR) room.recordNightAction(playerName, arg);
+                                else sendMessage("❌ Chỉ Doctor mới có thể dùng /save.");
+                            }
+                            break;
+                        case "/investigate":
+                            if (arg.isEmpty()) sendMessage("❌ Cú pháp: /investigate <tên>");
+                            else {
+                                if (getRole() == Role.DETECTIVE) room.recordNightAction(playerName, arg);
+                                else sendMessage("❌ Chỉ Detective mới có thể dùng /investigate.");
+                            }
+                            break;
+                        case "/protect":
+                            if (arg.isEmpty()) sendMessage("❌ Cú pháp: /protect <tên>");
+                            else {
+                                if (getRole() == Role.BODYGUARD) room.recordNightAction(playerName, arg);
+                                else sendMessage("❌ Chỉ Bodyguard mới có thể dùng /protect.");
+                            }
+                            break;
+                        case "/players":
+                            sendMessage("Players:" + room.getPlayersAll().stream().map(Player::toString).reduce("", (a,b)->a+"\n"+b));
+                            break;
+                        case "/role":
+                            sendMessage("🎭 Role: " + getRole());
+                            break;
+                        case "/quit":
+                            sendMessage("Goodbye.");
+                            socket.close();
+                            return;
+                        default:
+                            sendMessage("❌ Lệnh không hợp lệ: " + cmd);
+                    }
                 } else {
-                    // normal chat: broadcast only alive players can chat (optionally allow dead chat)
+                    // normal chat
                     room.broadcast(playerName + ": " + line);
                 }
-
-                // if game ended, allow chat but commands may be ignored
-                if (room.getState() == GameState.END) {
-                    // keep connection open
-                }
             }
+
         } catch (IOException e) {
-            System.err.println("Connection error with " + playerName + ": " + e.getMessage());
+            System.out.println("[PlayerHandler] Lỗi socket cho " + playerName + " : " + e.getMessage());
         } finally {
-            try {
-                if (playerName != null) {
-                    room.removePlayer(playerName);
-                }
-                socket.close();
-            } catch (IOException ignored) {}
+            if (playerName != null) {
+                room.removePlayer(playerName);
+                room.broadcast("❌ " + playerName + " đã ngắt kết nối.");
+            }
+            try { socket.close(); } catch (Exception ignored) {}
         }
     }
 
-    private void handleCommand(String cmdFull) {
-        String[] parts = cmdFull.split(" ", 2);
-        String cmd = parts[0].toLowerCase();
-        String arg = parts.length > 1 ? parts[1].trim() : "";
+    public void setRole(Role role) { this.role = role; }
 
-        switch (cmd) {
-            case "/help":
-                sendMessage("Lệnh: /start /night /endnight /kill <tên> /save <tên> /investigate <tên> /protect <tên> /vote <tên> /endday /status");
-                break;
+    public Role getRole() {
+        if (role != Role.UNASSIGNED) return role;
+        Player p = room.getPlayer(playerName);
+        return (p != null) ? p.getRole() : Role.UNASSIGNED;
+    }
 
-            case "/start":
-                room.startGame();
-                break;
-
-            case "/night":
-                room.startNight();
-                break;
-
-            case "/endnight":
-                room.endNight();
-                break;
-
-            case "/kill":
-                if (role == Role.MAFIA) {
-                    if (!arg.isEmpty()) room.recordNightAction(playerName, arg);
-                    else sendMessage("✅ Cú pháp: /kill <tên>");
-                } else sendMessage("❌ Bạn không phải Mafia.");
-                break;
-
-            case "/save":
-                if (role == Role.DOCTOR) {
-                    if (!arg.isEmpty()) room.recordNightAction(playerName, arg);
-                    else sendMessage("✅ Cú pháp: /save <tên>");
-                } else sendMessage("❌ Bạn không phải Doctor.");
-                break;
-
-            case "/investigate":
-                if (role == Role.DETECTIVE) {
-                    if (!arg.isEmpty()) room.recordNightAction(playerName, arg);
-                    else sendMessage("✅ Cú pháp: /investigate <tên>");
-                } else sendMessage("❌ Bạn không phải Detective.");
-                break;
-
-            case "/protect":
-                if (role == Role.BODYGUARD) {
-                    if (!arg.isEmpty()) {
-                        room.getPhaseManager().recordNightAction(playerName, arg);
-                    } else sendMessage("✅ Cú pháp: /protect <tên>");
-                } else sendMessage("❌ Bạn không phải Bodyguard.");
-                break;
-
-            case "/vote":
-                if (!arg.isEmpty()) {
-                    room.castVote(playerName, arg);
-                } else sendMessage("✅ Cú pháp: /vote <tên>");
-                break;
-
-            case "/endday":
-                room.endDay();
-                break;
-
-            case "/status":
-                StringBuilder s = new StringBuilder("=== Trạng thái ===\n");
-                s.append("GameState: ").append(room.getState()).append("\n");
-                s.append("Players (alive):\n");
-                for (Player p : room.getPlayersAlive()) {
-                    s.append(" - ").append(p.getName()).append(" (").append(p.getRole()).append(")\n");
-                }
-                sendMessage(s.toString());
-                break;
-
-            default:
-                sendMessage("❓ Lệnh không rõ. /help để xem lệnh.");
-        }
+    public void sendMessage(String msg) {
+        if (out != null) out.println(msg);
     }
 }

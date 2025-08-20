@@ -1,15 +1,16 @@
 package com.mafiaonline.server;
 
 public enum Role {
-    MAFIA("Mafia - tiêu diệt dân"),
-    VILLAGER("Dân thường - không kỹ năng"),
-    DOCTOR("Doctor - cứu 1 người mỗi đêm"),
-    DETECTIVE("Detective - điều tra 1 người mỗi đêm"),
-    JESTER("Jester - thắng nếu bị treo cổ"),
-    BODYGUARD("Bodyguard - bảo vệ 1 người (có thể hy sinh)");
+    UNASSIGNED("Chưa gán"),
+    MAFIA("Mafia: tiêu diệt dân làng"),
+    DETECTIVE("Detective: điều tra role của 1 người"),
+    DOCTOR("Doctor: cứu 1 người mỗi đêm"),
+    BODYGUARD("Bodyguard: bảo vệ 1 người và hy sinh nếu bị tấn công"),
+    JESTER("Jester: nếu bị treo cổ sẽ thắng ngay"),
+    VILLAGER("Villager: dân thường");
 
-    private final String description;
-    Role(String desc) { this.description = desc; }
-    public String getDescription() { return description; }
+    private final String desc;
+    Role(String d) { this.desc = d; }
+    public String getDescription() { return desc; }
     @Override public String toString() { return name(); }
 }
