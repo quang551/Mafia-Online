@@ -3,6 +3,13 @@ package com.mafiaonline.server;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * GameRoom - quản lý người chơi, role, trạng thái game và giao tiếp với PhaseManager.
+ * Phiên bản này:
+ *  - Phân role theo số người (1/2/3 mafia tuỳ player count)
+ *  - Không dùng nhiều iterator tên 'it' (dùng for-each)
+ *  - Cung cấp wrapper để PhaseManager/MessageHandler gọi
+ */
 public class GameRoom {
     private final Map<String, Player> players = new LinkedHashMap<>(); // name -> Player
     private final Map<String, PlayerHandler> handlers = new HashMap<>(); // name -> handler
@@ -10,6 +17,10 @@ public class GameRoom {
 
     private boolean gameStarted = false;
     private GameState state = GameState.LOBBY;
+
+    // lưu hành động ban đêm & vote ban ngày (dùng PhaseManager nhưng giữ cổng nếu cần)
+    private final Map<String, String> nightActions = new HashMap<>();
+    private final Map<String, String> dayVotes = new HashMap<>();
 
     public GameRoom() {
         this.phaseManager = new PhaseManager(this);
@@ -78,50 +89,32 @@ public class GameRoom {
         state = GameState.DAY;
 
         // Build role pool hợp lý theo số người chơi
-List<Role> pool = new ArrayList<>();
-int playerCount = players.size();
+        List<Role> pool = new ArrayList<>();
+        int playerCount = players.size();
 
-// Xác định số Mafia (5–6: 1 mafia, 7–8: 2 mafia, 9–10: 3 mafia)
-int mafiaCount = 1;
-if (playerCount >= 7) mafiaCount = 2;
-if (playerCount >= 9) mafiaCount = 3;
+        // Xác định số mafia theo số người
+        int mafiaCount = 1;
+        if (playerCount >= 7) mafiaCount = 2;
+        if (playerCount >= 9) mafiaCount = 3;
 
-// Thêm Mafia
-for (int i = 0; i < mafiaCount; i++) {
-    pool.add(Role.MAFIA);
-}
+        // Thêm Mafia
+        for (int i = 0; i < mafiaCount; i++) pool.add(Role.MAFIA);
 
-// Thêm các vai đặc biệt (tối đa 1 mỗi loại, nếu còn slot)
-if (pool.size() < playerCount) pool.add(Role.DOCTOR);
-if (pool.size() < playerCount) pool.add(Role.DETECTIVE);
-if (pool.size() < playerCount) pool.add(Role.BODYGUARD);
-if (pool.size() < playerCount) pool.add(Role.JESTER);
+        // Thêm các vai đặc biệt (mỗi loại tối đa 1)
+        if (pool.size() < playerCount) pool.add(Role.DOCTOR);
+        if (pool.size() < playerCount) pool.add(Role.DETECTIVE);
+        if (pool.size() < playerCount) pool.add(Role.BODYGUARD);
+        if (pool.size() < playerCount) pool.add(Role.JESTER);
 
-// Các slot còn lại là Dân làng
-while (pool.size() < playerCount) {
-    pool.add(Role.VILLAGER);
-}
+        // Phần còn lại là Villager
+        while (pool.size() < playerCount) pool.add(Role.VILLAGER);
 
-// Trộn ngẫu nhiên danh sách role
-Collections.shuffle(pool);
-Iterator<Role> it = pool.iterator();
-for (Player p : players.values()) {
-    Role r = it.next();
-    p.setRole(r);
-    PlayerHandler h = p.getHandler();
-    if (h != null) {
-        h.setRole(r);
-        h.sendMessage("🎭 Role của bạn: " + r + " — " + r.getDescription());
-    } else {
-        System.out.println("[GameRoom] " + p.getName() + " assigned role " + r);
-    }
-}
-
-
+        // Trộn và gán
         Collections.shuffle(pool);
-        Iterator<Role> it = pool.iterator();
+        Iterator<Role> roleIter = pool.iterator();
+
         for (Player p : players.values()) {
-            Role r = it.next();
+            Role r = roleIter.next();
             p.setRole(r);
             PlayerHandler h = p.getHandler();
             if (h != null) {

@@ -1,0 +1,9 @@
+com/mafiaonline/server/Role.class
+com/mafiaonline/server/MessageHandler.class
+com/mafiaonline/server/GameRoom.class
+com/mafiaonline/server/ServerMain.class
+com/mafiaonline/server/PlayerHandler.class
+com/mafiaonline/server/GameState.class
+com/mafiaonline/server/Player.class
+com/mafiaonline/server/PhaseManager.class
+com/mafiaonline/server/PhaseManager$1.class
