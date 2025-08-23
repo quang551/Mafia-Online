@@ -3,13 +3,6 @@ package com.mafiaonline.server;
 import java.io.*;
 import java.net.Socket;
 
-/**
- * Handle one client connection.
- * Commands (start with '/'):
- *  /start, /vote <name>, /endday, /kill <name>, /save <name>, /investigate <name>, /protect <name>,
- *  /players, /role, /quit
- * Chat: any line not starting with '/'
- */
 public class PlayerHandler extends Thread {
     private final Socket socket;
     private final GameRoom room;
@@ -17,6 +10,10 @@ public class PlayerHandler extends Thread {
     private BufferedReader in;
     private String playerName;
     private Role role = Role.UNASSIGNED;
+
+    // Trạng thái chờ hành động: gõ 1 từ (tên) để thực hiện
+    private enum PendingAction { NONE, VOTE, KILL, SAVE, INVESTIGATE, PROTECT }
+    private PendingAction pending = PendingAction.NONE;
 
     public PlayerHandler(Socket socket, GameRoom room) {
         this.socket = socket;
@@ -49,87 +46,118 @@ public class PlayerHandler extends Thread {
                 if (line.isEmpty()) continue;
 
                 if (line.startsWith("/")) {
+                    // ====== LỆNH CÓ DẤU / ======
                     String[] parts = line.split("\\s+", 2);
                     String cmd = parts[0].toLowerCase();
                     String arg = parts.length > 1 ? parts[1].trim() : "";
 
                     switch (cmd) {
-                        case "/start":
-                            room.startGame();
-                            break;
-                        case "/startday":
-                        case "/day":
-                            room.startDayPhase();
-                            break;
-                        case "/endday":
-                            room.endDayPhase();
-                            break;
-                        case "/startnight":
-                        case "/night":
-                            room.startNightPhase();
-                            break;
-                        case "/endnight":
-                            room.endNightPhase();
-                            break;
-                        case "/vote":
+                        case "/start" -> room.startGame();
+
+                        case "/startday", "/day" -> room.startDayPhase();
+                        case "/endday" -> room.endDayPhase();
+
+                        case "/startnight", "/night" -> room.startNightPhase();
+                        case "/endnight" -> room.endNightPhase();
+
+                        case "/vote" -> {
                             if (arg.isEmpty()) sendMessage("❌ Cú pháp: /vote <tên>");
                             else room.castVote(playerName, arg);
-                            break;
-                        case "/kill":
+                            pending = PendingAction.NONE;
+                        }
+
+                        case "/kill" -> {
                             if (arg.isEmpty()) sendMessage("❌ Cú pháp: /kill <tên>");
-                            else {
-                                if (getRole() == Role.MAFIA) room.recordNightAction(playerName, arg);
-                                else sendMessage("❌ Chỉ Mafia mới có thể dùng /kill.");
-                            }
-                            break;
-                        case "/save":
+                            else if (getRole() == Role.MAFIA) room.recordNightAction(playerName, arg);
+                            else sendMessage("❌ Chỉ Mafia mới có thể dùng /kill.");
+                            pending = PendingAction.NONE;
+                        }
+
+                        case "/save" -> {
                             if (arg.isEmpty()) sendMessage("❌ Cú pháp: /save <tên>");
-                            else {
-                                if (getRole() == Role.DOCTOR) room.recordNightAction(playerName, arg);
-                                else sendMessage("❌ Chỉ Doctor mới có thể dùng /save.");
-                            }
-                            break;
-                        case "/investigate":
+                            else if (getRole() == Role.DOCTOR) room.recordNightAction(playerName, arg);
+                            else sendMessage("❌ Chỉ Doctor mới có thể dùng /save.");
+                            pending = PendingAction.NONE;
+                        }
+
+                        case "/investigate" -> {
                             if (arg.isEmpty()) sendMessage("❌ Cú pháp: /investigate <tên>");
-                            else {
-                                if (getRole() == Role.DETECTIVE) room.recordNightAction(playerName, arg);
-                                else sendMessage("❌ Chỉ Detective mới có thể dùng /investigate.");
-                            }
-                            break;
-                        case "/protect":
+                            else if (getRole() == Role.DETECTIVE) room.recordNightAction(playerName, arg);
+                            else sendMessage("❌ Chỉ Detective mới có thể dùng /investigate.");
+                            pending = PendingAction.NONE;
+                        }
+
+                        case "/protect" -> {
                             if (arg.isEmpty()) sendMessage("❌ Cú pháp: /protect <tên>");
-                            else {
-                                if (getRole() == Role.BODYGUARD) room.recordNightAction(playerName, arg);
-                                else sendMessage("❌ Chỉ Bodyguard mới có thể dùng /protect.");
-                            }
-                            break;
-                        case "/players":
-                            sendMessage("Players:" + room.getPlayersAll().stream().map(Player::toString).reduce("", (a,b)->a+"\n"+b));
-                            break;
-                        case "/role":
-                            sendMessage("🎭 Role: " + getRole());
-                            break;
-                        case "/quit":
+                            else if (getRole() == Role.BODYGUARD) room.recordNightAction(playerName, arg);
+                            else sendMessage("❌ Chỉ Bodyguard mới có thể dùng /protect.");
+                            pending = PendingAction.NONE;
+                        }
+
+                        case "/players" -> sendMessage(
+                                "Players:" + room.getPlayersAll().stream()
+                                        .map(Player::toString)
+                                        .reduce("", (a, b) -> a + "\n" + b)
+                        );
+
+                        case "/role" -> sendMessage("🎭 Role: " + getRole());
+
+                        case "/quit" -> {
                             sendMessage("Goodbye.");
                             socket.close();
                             return;
-                        default:
-                            sendMessage("❌ Lệnh không hợp lệ: " + cmd);
+                        }
+
+                        default -> sendMessage("❌ Lệnh không hợp lệ: " + cmd);
                     }
                 } else {
-                    // normal chat
-                    room.broadcast(playerName + ": " + line);
+                    // ====== INPUT THƯỜNG (KHÔNG /) ======
+                    GameState s = room.getState();
+
+                    // Nếu đang chờ action và người chơi gõ 1 token (không có khoảng trắng) => coi là tên mục tiêu
+                    if (pending != PendingAction.NONE && !line.contains(" ")) {
+                        switch (pending) {
+                            case VOTE -> room.castVote(playerName, line);
+                            case KILL -> {
+                                if (getRole() == Role.MAFIA) room.recordNightAction(playerName, line);
+                                else sendMessage("❌ Bạn không phải Mafia.");
+                            }
+                            case SAVE -> {
+                                if (getRole() == Role.DOCTOR) room.recordNightAction(playerName, line);
+                                else sendMessage("❌ Bạn không phải Doctor.");
+                            }
+                            case INVESTIGATE -> {
+                                if (getRole() == Role.DETECTIVE) room.recordNightAction(playerName, line);
+                                else sendMessage("❌ Bạn không phải Detective.");
+                            }
+                            case PROTECT -> {
+                                if (getRole() == Role.BODYGUARD) room.recordNightAction(playerName, line);
+                                else sendMessage("❌ Bạn không phải Bodyguard.");
+                            }
+                            default -> {}
+                        }
+                        pending = PendingAction.NONE;
+                        continue;
+                    }
+
+                    // Không có pending hoặc nhập không phải 1 từ
+                    if (s == GameState.NIGHT) {
+                        // 🚫 CẤM CHAT BAN ĐÊM
+                        sendMessage("🌙 Ban đêm không thể chat. Gõ tên để hành động theo vai trò của bạn.");
+                    } else {
+                        // Ban ngày: cho phép chat bình thường
+                        room.broadcast(playerName + ": " + line);
+                    }
                 }
             }
-
         } catch (IOException e) {
             System.out.println("[PlayerHandler] Lỗi socket cho " + playerName + " : " + e.getMessage());
         } finally {
+            try { socket.close(); } catch (Exception ignored) {}
             if (playerName != null) {
                 room.removePlayer(playerName);
                 room.broadcast("❌ " + playerName + " đã ngắt kết nối.");
             }
-            try { socket.close(); } catch (Exception ignored) {}
         }
     }
 
@@ -143,5 +171,32 @@ public class PlayerHandler extends Thread {
 
     public void sendMessage(String msg) {
         if (out != null) out.println(msg);
+    }
+
+    /** Được gọi khi phase đổi để hiển thị prompt nhập tên theo vai trò/phase */
+    public void setPendingForPhase(GameState state) {
+        if (!room.isGameStarted() || !isAliveInRoom()) {
+            pending = PendingAction.NONE;
+            return;
+        }
+        if (state == GameState.DAY) {
+            pending = PendingAction.VOTE;
+            sendMessage("🌞 Bạn muốn vote ai? Gõ tên:");
+        } else if (state == GameState.NIGHT) {
+            switch (getRole()) {
+                case MAFIA     -> { pending = PendingAction.KILL;        sendMessage("🌙 Bạn muốn giết ai? Gõ tên:"); }
+                case DOCTOR    -> { pending = PendingAction.SAVE;        sendMessage("🌙 Bạn muốn cứu ai? Gõ tên:"); }
+                case DETECTIVE -> { pending = PendingAction.INVESTIGATE; sendMessage("🌙 Bạn muốn điều tra ai? Gõ tên:"); }
+                case BODYGUARD -> { pending = PendingAction.PROTECT;     sendMessage("🌙 Bạn muốn bảo vệ ai? Gõ tên:"); }
+                default -> pending = PendingAction.NONE;
+            }
+        } else {
+            pending = PendingAction.NONE;
+        }
+    }
+
+    private boolean isAliveInRoom() {
+        Player p = room.getPlayer(playerName);
+        return p != null && p.isAlive();
     }
 }

@@ -9,6 +9,7 @@ import java.util.stream.Collectors;
  *  - Phân role theo số người (1/2/3 mafia tuỳ player count)
  *  - Không dùng nhiều iterator tên 'it' (dùng for-each)
  *  - Cung cấp wrapper để PhaseManager/MessageHandler gọi
+ *  - BỔ SUNG: promptPendingForPhaseForAll(), getHandler(), getAllHandlers()
  */
 public class GameRoom {
     private final Map<String, Player> players = new LinkedHashMap<>(); // name -> Player
@@ -215,5 +216,25 @@ public class GameRoom {
     public synchronized void printPlayers() {
         System.out.println("=== Player list ===");
         for (Player p : players.values()) System.out.println(" - " + p);
+    }
+
+    // ---------- Handlers helper (CHO PROMPT NHẬP TÊN) ----------
+    /** Lấy handler theo tên (nếu cần dùng riêng lẻ) */
+    public synchronized PlayerHandler getHandler(String name) {
+        return handlers.get(name);
+    }
+
+    /** Lấy tất cả handler (nếu cần lặp) */
+    public synchronized Collection<PlayerHandler> getAllHandlers() {
+        return Collections.unmodifiableCollection(handlers.values());
+    }
+
+    /** Gọi prompt pending cho tất cả player theo state hiện tại.
+     *  Dùng trong PhaseManager.startDay()/startNight() sau khi broadcast. */
+    public synchronized void promptPendingForPhaseForAll() {
+        GameState s = getState();
+        for (PlayerHandler h : handlers.values()) {
+            h.setPendingForPhase(s);
+        }
     }
 }
