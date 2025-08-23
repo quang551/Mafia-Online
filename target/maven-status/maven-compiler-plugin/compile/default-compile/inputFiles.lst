@@ -1,6 +1,7 @@
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/ClientListener.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/ClientMain.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/ClientSender.java
+/Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/SimpleSwingClient.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/common/JsonUtil.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/common/Message.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/common/MessageType.java

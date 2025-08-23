@@ -11,6 +11,7 @@ com/mafiaonline/common/JsonUtil.class
 com/mafiaonline/server/ServerMain.class
 com/mafiaonline/server/PlayerHandler$PendingAction.class
 com/mafiaonline/server/Player.class
+com/mafiaonline/client/SimpleSwingClient.class
 com/mafiaonline/server/PhaseManager.class
 com/mafiaonline/server/PhaseManager$1.class
 com/mafiaonline/common/MessageHandler.class

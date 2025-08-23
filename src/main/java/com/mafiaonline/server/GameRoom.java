@@ -81,8 +81,8 @@ public class GameRoom {
             broadcast("⚠️ Game đã bắt đầu.");
             return;
         }
-        if (players.size() < 5) {
-            broadcast("❌ Cần ít nhất 5 người để bắt đầu game (hiện: " + players.size() + ").");
+        if (players.size() < 3) {
+            broadcast("❌ Cần ít nhất 3 người để bắt đầu game (hiện: " + players.size() + ").");
             return;
         }
 
