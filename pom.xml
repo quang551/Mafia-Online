@@ -1,54 +1,134 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.mafiaonline</groupId>
   <artifactId>mafia-online</artifactId>
-  <version>1.0-SNAPSHOT</version>
+  <version>1.0.0-SNAPSHOT</version>
+  <name>Mafia-Online</name>
+  <description>Mafia Online (server + client)</description>
   <packaging>jar</packaging>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
-    <jackson.version>2.17.1</jackson.version>
+    <exec.args></exec.args> <!-- có thể truyền khi chạy: -Dexec.args="localhost 12345" -->
   </properties>
 
   <dependencies>
-    <!-- Jackson cho ObjectMapper và @JsonProperty -->
+    <!-- JSON mapper cho AuthService (ObjectMapper) -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>${jackson.version}</version>
+      <version>2.17.2</version>
     </dependency>
+
+    <!-- UI đẹp cho client -->
     <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-annotations</artifactId>
-      <version>${jackson.version}</version>
+      <groupId>com.formdev</groupId>
+      <artifactId>flatlaf</artifactId>
+      <version>3.4</version>
     </dependency>
   </dependencies>
 
   <build>
     <plugins>
+      <!-- Biên dịch với Java 17 -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
+        <version>3.11.0</version>
         <configuration>
-          <release>17</release>
+          <release>${maven.compiler.release}</release>
         </configuration>
       </plugin>
 
-     
+      <!-- Chạy app bằng mvn exec:java -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
+      </plugin>
+
+      <!-- Đóng gói JAR kèm dependencies (tuỳ chọn: mvn -DskipTests package) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <version>3.6.0</version>
         <configuration>
-          <mainClass>com.mafiaonline.server.ServerMain</mainClass>
+          <archive>
+            <manifest>
+              <mainClass>com.mafiaonline.server.ServerMain</mainClass>
+            </manifest>
+          </archive>
+          <descriptorRefs>
+            <descriptorRef>jar-with-dependencies</descriptorRef>
+          </descriptorRefs>
         </configuration>
+        <executions>
+          <execution>
+            <id>make-assembly</id>
+            <phase>package</phase>
+            <goals><goal>single</goal></goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
-</project>
 
+  <!-- Profiles để chạy nhanh server / client -->
+  <profiles>
+    <profile>
+      <id>server</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.3.0</version>
+            <configuration>
+              <mainClass>com.mafiaonline.server.ServerMain</mainClass>
+              <commandlineArgs>${exec.args}</commandlineArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <profile>
+      <id>client-cli</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.3.0</version>
+            <configuration>
+              <mainClass>com.mafiaonline.client.ClientMain</mainClass>
+              <commandlineArgs>${exec.args}</commandlineArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <profile>
+      <id>client-gui</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.3.0</version>
+            <configuration>
+              <mainClass>com.mafiaonline.client.SimpleSwingClient</mainClass>
+              <commandlineArgs>${exec.args}</commandlineArgs>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

@@ -1,4 +1,5 @@
 com/mafiaonline/common/MessageHandler$1.class
+com/mafiaonline/server/auth/AuthService$1.class
 com/mafiaonline/server/Role.class
 com/mafiaonline/server/GameRoom.class
 com/mafiaonline/server/PlayerHandler.class
@@ -6,10 +7,15 @@ com/mafiaonline/server/GameState.class
 com/mafiaonline/common/Message.class
 com/mafiaonline/common/MessageType.class
 com/mafiaonline/server/PlayerHandler$1.class
+com/mafiaonline/server/auth/AuthService.class
 com/mafiaonline/common/Protocol.class
+com/mafiaonline/client/ClientMain.class
+com/mafiaonline/client/SimpleSwingClient$1.class
 com/mafiaonline/common/JsonUtil.class
 com/mafiaonline/server/ServerMain.class
+com/mafiaonline/client/ClientSender.class
 com/mafiaonline/server/PlayerHandler$PendingAction.class
+com/mafiaonline/client/ClientListener.class
 com/mafiaonline/server/Player.class
 com/mafiaonline/client/SimpleSwingClient.class
 com/mafiaonline/server/PhaseManager.class
