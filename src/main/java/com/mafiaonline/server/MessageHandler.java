@@ -1,94 +1,109 @@
-package com.mafiaonline.server;
+package com.mafiaonline.common;
 
-import java.util.StringTokenizer;
-
-/**
- * MessageHandler chịu trách nhiệm xử lý tin nhắn từ client.
- * Có thể là chat bình thường hoặc lệnh điều khiển game (/vote, /kill, /heal...).
- */
 public class MessageHandler {
-    private final GameRoom gameRoom;
-
-    public MessageHandler(GameRoom gameRoom) {
-        this.gameRoom = gameRoom;
-    }
 
     /**
-     * Xử lý tin nhắn client gửi lên server
-     * @param sender tên người gửi
-     * @param msg nội dung tin nhắn
+     * Xử lý message JSON từ client gửi lên
      */
-    public void handleMessage(String sender, String msg) {
-        if (msg == null || msg.trim().isEmpty()) return;
+    public void handleMessage(String json) {
+        try {
+            // 1. Chuyển JSON → Object
+            Message message = JsonUtil.fromJson(json);
 
-        // Nếu bắt đầu bằng "/", coi là lệnh
-        if (msg.startsWith("/")) {
-            handleCommand(sender, msg);
-        } else {
-            // Nếu không thì broadcast chat bình thường
-            gameRoom.broadcast("💬 " + sender + ": " + msg);
+            // 2. Switch theo loại message
+            switch (message.getType()) {
+                case JOIN:
+                    handleJoin(message);
+                    break;
+                case LEAVE:
+                    handleLeave(message);
+                    break;
+                case CHAT:
+                    handleChat(message);
+                    break;
+                case PRIVATE_CHAT:
+                    handlePrivateChat(message);
+                    break;
+                case VOTE:
+                    handleVote(message);
+                    break;
+                case KILL:
+                    handleKill(message);
+                    break;
+                case HEAL:
+                    handleHeal(message);
+                    break;
+                case INVESTIGATE:
+                    handleInvestigate(message);
+                    break;
+                case START_GAME:
+                    handleStartGame(message);
+                    break;
+                case END_GAME:
+                    handleEndGame(message);
+                    break;
+                case SYSTEM:
+                    handleSystem(message);
+                    break;
+                case ERROR:
+                    handleError(message);
+                    break;
+                default:
+                    System.out.println("❓ Unknown message type: " + message.getType());
+            }
+
+        } catch (Exception e) {
+            System.out.println("⚠️ Lỗi khi xử lý JSON: " + e.getMessage());
         }
     }
 
-    private void handleCommand(String sender, String msg) {
-        StringTokenizer st = new StringTokenizer(msg);
-        String command = st.nextToken().toLowerCase();
+    // ==== Các hàm xử lý cụ thể ====
 
-        switch (command) {
-            case "/vote": {
-                if (st.hasMoreTokens()) {
-                    String target = st.nextToken();
-                    gameRoom.castVote(sender, target);
-                } else {
-                    gameRoom.privateMessage(sender, "⚠️ Dùng: /vote <tên người chơi>");
-                }
-                break;
-            }
+    private void handleJoin(Message message) {
+        System.out.println("[JOIN] " + message.getSender() + " đã tham gia phòng.");
+    }
 
-            case "/kill": {
-                if (st.hasMoreTokens()) {
-                    String target = st.nextToken();
-                    gameRoom.recordNightAction(sender, target);
-                } else {
-                    gameRoom.privateMessage(sender, "⚠️ Dùng: /kill <tên người chơi>");
-                }
-                break;
-            }
+    private void handleLeave(Message message) {
+        System.out.println("[LEAVE] " + message.getSender() + " đã rời phòng.");
+    }
 
-            case "/heal": {
-                if (st.hasMoreTokens()) {
-                    String target = st.nextToken();
-                    gameRoom.recordNightAction(sender, target);
-                } else {
-                    gameRoom.privateMessage(sender, "⚠️ Dùng: /heal <tên người chơi>");
-                }
-                break;
-            }
+    private void handleChat(Message message) {
+        System.out.println("[CHAT] " + message.getSender() + ": " + message.getContent());
+    }
 
-            case "/start": {
-                gameRoom.startGame();
-                break;
-            }
+    private void handlePrivateChat(Message message) {
+        System.out.println("[PRIVATE CHAT] " + message.getSender() + " (mafia chat): " + message.getContent());
+    }
 
-            case "/list": {
-                gameRoom.printPlayers();
-                gameRoom.privateMessage(sender,
-                        "👥 Có " + gameRoom.getPlayersAll().size() + " người trong phòng.");
-                break;
-            }
+    private void handleVote(Message message) {
+        System.out.println("[VOTE] " + message.getSender() + " vote " + message.getContent());
+    }
 
-            case "/role": {
-                Role r = gameRoom.getPlayerRole(sender);
-                if (r != null) {
-                    gameRoom.privateMessage(sender, "🎭 Vai trò của bạn: " + r);
-                }
-                break;
-            }
+    private void handleKill(Message message) {
+        System.out.println("[KILL] Mafia chọn giết " + message.getContent());
+    }
 
-            default:
-                gameRoom.privateMessage(sender,
-                        "❓ Lệnh không hợp lệ: " + command);
-                break;
-        }
+    private void handleHeal(Message message) {
+        System.out.println("[HEAL] Bác sĩ cứu " + message.getContent());
+    }
+
+    private void handleInvestigate(Message message) {
+        System.out.println("[INVESTIGATE] Cảnh sát điều tra " + message.getContent());
+    }
+
+    private void handleStartGame(Message message) {
+        System.out.println("[START] Game bắt đầu!");
+    }
+
+    private void handleEndGame(Message message) {
+        System.out.println("[END] Game kết thúc!");
+    }
+
+    private void handleSystem(Message message) {
+        System.out.println("[SYSTEM] " + message.getContent());
+    }
+
+    private void handleError(Message message) {
+        System.out.println("[ERROR] " + message.getContent());
     }
 }

@@ -1,5 +1,6 @@
 package com.mafiaonline.client;
 
+<<<<<<< HEAD
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.Socket;
@@ -27,6 +28,3 @@ public class ClientSender {
             scanner.close();
         } catch (IOException e) {
             System.err.println("[ClientSender] Lỗi gửi dữ liệu: " + e.getMessage());
-        }
-    }
-}

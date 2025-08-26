@@ -4,207 +4,214 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
-/**
- * PhaseManager with auto-timeout for Day/Night phases.
- *
- * Behavior:
- *  - startDay() / startNight() schedule an automatic end after configured seconds.
- *  - If endDay() / endNight() is called manually, scheduled tasks are cancelled.
- *  - A 10-second warning is broadcast automatically (if phase duration > 10s).
- *
- * Thread-safety: public methods are synchronized.
- */
 public class PhaseManager {
+
     private final GameRoom room;
 
-    // whether currently in night phase (true) or not
-    private boolean nightPhase = false;
-
-    // night actions: actorName -> targetName
-    private final Map<String, String> nightActions = new HashMap<>();
-
-    // day votes: voterName -> targetName
+    // Lưu vote ban ngày: voter -> target
     private final Map<String, String> dayVotes = new HashMap<>();
 
-    // Scheduler for timeouts
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "PhaseManager-Scheduler");
-        t.setDaemon(true);
-        return t;
-    });
+    // Lưu hành động ban đêm: actor -> target
+    private final Map<String, String> nightActions = new HashMap<>();
 
-    // Scheduled futures (so we can cancel if phase ends early)
-    private ScheduledFuture<?> endTask = null;
-    private ScheduledFuture<?> warningTask = null;
+    // Lập lịch phase (nếu muốn chạy auto)
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledFuture<?> dayTimer;
+    private ScheduledFuture<?> nightTimer;
 
-    // Default durations (seconds) — you can change via constructor or setter
-    private int DAY_SECONDS = 60;
-    private int NIGHT_SECONDS = 30;
+    // Thời lượng phase (giây) – bạn có thể chỉnh dài hơn ở đây
+    private int DAY_DURATION_SEC = 300;    // ví dụ 5 phút
+    private int NIGHT_DURATION_SEC = 120;  // ví dụ 2 phút
+
+    private boolean nightPhase = false;
 
     public PhaseManager(GameRoom room) {
         this.room = room;
     }
 
-    /**
-     * Optional: set custom durations (seconds) before starting phases
-     */
-    public synchronized void setDurations(int daySeconds, int nightSeconds) {
-        if (daySeconds > 0) this.DAY_SECONDS = daySeconds;
-        if (nightSeconds > 0) this.NIGHT_SECONDS = nightSeconds;
-    }
+    /* ==================== DAY PHASE ==================== */
 
-    // -------------------- helper scheduling --------------------
-    private synchronized void cancelScheduledTasks() {
-        if (endTask != null && !endTask.isDone()) {
-            endTask.cancel(false);
-            endTask = null;
-        }
-        if (warningTask != null && !warningTask.isDone()) {
-            warningTask.cancel(false);
-            warningTask = null;
-        }
-    }
-
-    private synchronized void scheduleEndTask(Runnable endRunnable, int seconds) {
+    public synchronized void startDay() {
         cancelScheduledTasks();
-        if (seconds <= 0) return;
-        // schedule warning if > 10s
-        if (seconds > 10) {
-            int warnAt = seconds - 10;
-            warningTask = scheduler.schedule(() -> {
-                try {
-                    room.broadcast("⏳ Chỉ còn 10 giây nữa!");
-                } catch (Exception ex) {
-                    System.err.println("[PhaseManager] warningTask exception: " + ex.getMessage());
-                }
-            }, warnAt, TimeUnit.SECONDS);
+        nightPhase = false;
+        dayVotes.clear();
+        room.setState(GameState.DAY);
+
+        room.broadcast("🌞 Ban ngày bắt đầu. Gõ tên để VOTE (hoặc dùng /vote <tên>).");
+        // Hiện prompt “Bạn muốn vote ai?”
+        room.promptPendingForPhaseForAll();
+
+        // (tuỳ chọn) tự động kết thúc Day sau thời lượng
+        if (DAY_DURATION_SEC > 0) {
+            dayTimer = scheduler.schedule(this::safeEndDay, DAY_DURATION_SEC, TimeUnit.SECONDS);
         }
-        endTask = scheduler.schedule(() -> {
-            try {
-                endRunnable.run();
-            } catch (Exception ex) {
-                System.err.println("[PhaseManager] endTask exception: " + ex.getMessage());
-            }
-        }, seconds, TimeUnit.SECONDS);
     }
 
-    // -------------------- NIGHT --------------------
+    public synchronized void castVote(String voter, String target) {
+        if (room.getState() != GameState.DAY) {
+            room.sendToPlayer(voter, "❌ Chưa phải ban ngày.");
+            return;
+        }
+        if (!isAlive(voter)) {
+            room.sendToPlayer(voter, "❌ Bạn đã chết, không thể vote.");
+            return;
+        }
+        if (!isAlive(target)) {
+            room.sendToPlayer(voter, "❌ Mục tiêu không tồn tại hoặc đã chết.");
+            return;
+        }
+        dayVotes.put(voter, target);
+        room.broadcast("🗳️ " + voter + " đã vote " + target + ".");
+    }
+
+    public synchronized void endDay() {
+        cancelScheduledTasks();
+        if (room.getState() != GameState.DAY) {
+            room.broadcast("❌ Không ở ban ngày.");
+            return;
+        }
+
+        if (dayVotes.isEmpty()) {
+            room.broadcast("📭 Không có vote nào. Không ai bị treo cổ.");
+            startNight();
+            return;
+        }
+
+        // Tính phiếu: target -> count
+        Map<String, Long> counts = dayVotes.values().stream()
+                .collect(Collectors.groupingBy(v -> v, Collectors.counting()));
+
+        long max = counts.values().stream().mapToLong(Long::longValue).max().orElse(0);
+        List<String> top = counts.entrySet().stream()
+                .filter(e -> e.getValue() == max)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+
+        if (top.size() > 1) {
+            room.broadcast("⚖️ Vote hòa. Không ai bị treo cổ hôm nay.");
+            dayVotes.clear();
+            startNight();
+            return;
+        }
+
+        String targetName = top.get(0);
+        Player victim = room.getPlayer(targetName);
+
+        if (victim == null || !victim.isAlive()) {
+            room.broadcast("⚠️ Người bị vote treo cổ không hợp lệ hoặc đã chết. Không ai bị treo cổ.");
+            dayVotes.clear();
+            startNight();
+            return;
+        }
+
+        // Treo cổ (không tiết lộ vai)
+        victim.kill();
+        room.broadcast("🪢 " + targetName + " đã bị treo cổ.");
+
+        // ✅ Jester thắng ngay khi bị treo cổ
+        if (victim.getRole() == Role.JESTER) {
+            room.broadcast("🤡 JESTER THẮNG! " + targetName + " đã đạt mục tiêu khi bị treo cổ.");
+            room.endGame();
+            return;
+        }
+
+        dayVotes.clear();
+        startNight();
+    }
+
+    private void safeEndDay() {
+        try { endDay(); } catch (Exception ignored) {}
+    }
+
+    /* ==================== NIGHT PHASE ==================== */
+
     public synchronized void startNight() {
-        if (!room.isGameStarted()) {
-            room.broadcast("❌ Game chưa bắt đầu.");
-            return;
-        }
-        if (nightPhase) {
-            room.broadcast("🌙 Ban đêm đã bắt đầu rồi.");
-            return;
-        }
+        cancelScheduledTasks();
         nightPhase = true;
         nightActions.clear();
         room.setState(GameState.NIGHT);
 
-        room.broadcast("🌙 Ban đêm bắt đầu. Các role có hành động ban đêm hãy dùng lệnh tương ứng (/kill /save /investigate /protect).");
-        room.broadcast("⏱ Pha Đêm sẽ tự kết thúc sau " + NIGHT_SECONDS + " giây, hoặc dùng /endnight để kết thúc sớm.");
+        room.broadcast("🌙 Ban đêm bắt đầu. Gõ tên theo prompt để hành động.");
+        // Hiện prompt tùy role: giết/cứu/điều tra/bảo vệ
+        room.promptPendingForPhaseForAll();
 
-        // schedule automatic endNight()
-        scheduleEndTask(this::endNightSafeWrapper, NIGHT_SECONDS);
-    }
-
-    /**
-     * Safe wrapper so scheduled task calls endNight() via the PhaseManager instance,
-     * ensuring synchronized semantics are used.
-     */
-    private void endNightSafeWrapper() {
-        try {
-            synchronized (this) { endNight(); }
-        } catch (Exception ex) {
-            System.err.println("[PhaseManager] endNightSafeWrapper exception: " + ex.getMessage());
+        if (NIGHT_DURATION_SEC > 0) {
+            nightTimer = scheduler.schedule(this::safeEndNight, NIGHT_DURATION_SEC, TimeUnit.SECONDS);
         }
     }
 
-    /**
-     * Record an action during night: actorName -> targetName
-     */
-    public synchronized void recordNightAction(String actorNameRaw, String targetNameRaw) {
-        String actorName = actorNameRaw == null ? "" : actorNameRaw.trim();
-        String targetName = targetNameRaw == null ? "" : targetNameRaw.trim();
-
-        if (!nightPhase) {
-            room.sendToPlayer(actorName, "❌ Hiện không phải ban đêm.");
+    public synchronized void recordNightAction(String actorName, String targetName) {
+        if (room.getState() != GameState.NIGHT) {
+            room.sendToPlayer(actorName, "❌ Chưa phải ban đêm.");
             return;
         }
-        if (actorName.isEmpty() || targetName.isEmpty()) {
-            room.sendToPlayer(actorName, "❌ Cú pháp không hợp lệ.");
-            return;
-        }
-
-        Player actor = room.getPlayer(actorName);
-        Player target = room.getPlayer(targetName);
-        if (actor == null) {
-            System.out.println("[PhaseManager] recordNightAction: actor không tồn tại: " + actorName);
-            return;
-        }
-        if (!actor.isAlive()) {
+        if (!isAlive(actorName)) {
             room.sendToPlayer(actorName, "❌ Bạn đã chết, không thể hành động.");
             return;
         }
-        if (target == null || !target.isAlive()) {
+        if (!isAlive(targetName)) {
             room.sendToPlayer(actorName, "❌ Mục tiêu không tồn tại hoặc đã chết.");
             return;
         }
 
+        Player actor = room.getPlayer(actorName);
+        if (actor == null || actor.getRole() == null) {
+            room.sendToPlayer(actorName, "❌ Không xác định được vai của bạn.");
+            return;
+        }
+
+        // Ghi nhận (để resolve cuối đêm)
         nightActions.put(actorName, targetName);
-        room.sendToPlayer(actorName, "✅ Ghi nhận hành động ban đêm: " + actorName + " -> " + targetName);
-        System.out.println("[PhaseManager] Night action recorded: " + actorName + "(" + actor.getRole() + ") -> " + targetName);
+        room.sendToPlayer(actorName, "✅ Đã ghi nhận hành động đêm: " + actorName + " -> " + targetName);
+        System.out.println("[PhaseManager] Night action: " + actorName + "(" + actor.getRole() + ") -> " + targetName);
     }
 
     public synchronized void endNight() {
-        // Cancel scheduled tasks because we're ending now (manually or via scheduled)
         cancelScheduledTasks();
-
-        if (!nightPhase) {
-            room.broadcast("❌ Chưa phải ban đêm.");
+        if (room.getState() != GameState.NIGHT) {
+            room.broadcast("❌ Không ở ban đêm.");
             return;
         }
-        nightPhase = false;
-        room.setState(GameState.DAY);
 
-        // Collect actions
-        String doctorSave = null;
-        List<String> detectiveChecks = new ArrayList<>();
-        Map<String, String> bodyguardProtects = new HashMap<>();
-        Map<String, Integer> mafiaVotes = new HashMap<>();
+        // Gom hành động theo role
+        Map<String, Integer> mafiaVotesCount = new HashMap<>(); // target -> count
+        String doctorSave = null;                                // target cứu
+        Map<String, String> bodyguardProtects = new HashMap<>(); // actor -> target
+        List<String> detectiveChecks = new ArrayList<>();        // danh sách người bị điều tra
 
         for (Map.Entry<String, String> e : nightActions.entrySet()) {
             String actor = e.getKey();
             String target = e.getValue();
-            Player actorP = room.getPlayer(actor);
-            if (actorP == null || actorP.getRole() == null) continue;
-            Role r = actorP.getRole();
-            switch (r) {
-                case MAFIA -> mafiaVotes.put(target, mafiaVotes.getOrDefault(target, 0) + 1);
-                case DOCTOR -> doctorSave = target;
-                case DETECTIVE -> detectiveChecks.add(target);
-                case BODYGUARD -> bodyguardProtects.put(actor, target);
-                default -> { }
-            }
-        }
+            Player p = room.getPlayer(actor);
+            if (p == null || !p.isAlive()) continue;
 
-        // determine mafia target (majority)
-        String mafiaTarget = null;
-        if (!mafiaVotes.isEmpty()) {
-            int max = mafiaVotes.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-            List<String> top = mafiaVotes.entrySet().stream()
-                    .filter(en -> en.getValue() == max)
-                    .map(Map.Entry::getKey)
-                    .collect(Collectors.toList());
-            if (top.size() == 1) mafiaTarget = top.get(0);
-            else room.broadcast("⚠️ Mafia không thống nhất mục tiêu (hoà). Đêm nay không ai bị giết bởi mafia.");
+            Role r = p.getRole();
+            if (r == null) continue;
+
+            switch (r) {
+                case MAFIA     -> mafiaVotesCount.merge(target, 1, Integer::sum);
+                case DOCTOR    -> doctorSave = target;
+                case BODYGUARD -> bodyguardProtects.put(actor, target);
+                case DETECTIVE -> detectiveChecks.add(target);
+                default -> {}
+            }
         }
 
         StringBuilder sb = new StringBuilder();
         sb.append("🌅 Trời sáng! Kết quả ban đêm:\n");
 
-        // handle bodyguard protection
+        // Tìm mục tiêu của Mafia (đa số phiếu)
+        String mafiaTarget = null;
+        if (!mafiaVotesCount.isEmpty()) {
+            long max = mafiaVotesCount.values().stream().mapToLong(Integer::longValue).max().orElse(0);
+            List<String> top = mafiaVotesCount.entrySet().stream()
+                    .filter(x -> x.getValue() == max)
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toList());
+            if (top.size() == 1) mafiaTarget = top.get(0);
+        }
+
+        // Bodyguard: nếu bảo vệ đúng target, BG hy sinh — NHƯNG không tiết lộ
         boolean protectedByBG = false;
         String protector = null;
         if (mafiaTarget != null) {
@@ -217,45 +224,33 @@ public class PhaseManager {
             }
         }
 
-        // resolve kill/save/protect
+        // Resolve kill/save/protect — KHÔNG TIẾT LỘ cơ chế
+        boolean someoneDied = false;
+
         if (mafiaTarget != null) {
             if (protectedByBG) {
                 Player bg = room.getPlayer(protector);
                 if (bg != null && bg.isAlive()) {
-                    bg.kill();
-                    sb.append("💂 Bodyguard ").append(protector).append(" đã hy sinh để bảo vệ ").append(mafiaTarget).append(".\n");
-                } else {
-                    if (mafiaTarget.equalsIgnoreCase(doctorSave)) {
-                        sb.append("✨ ").append(mafiaTarget).append(" bị tấn công nhưng được Doctor cứu.\n");
-                    } else {
-                        Player victim = room.getPlayer(mafiaTarget);
-                        if (victim != null && victim.isAlive()) {
-                            victim.kill();
-                            sb.append("💀 ").append(mafiaTarget).append(" đã bị Mafia giết.\n");
-                        } else {
-                            sb.append("😴 Mafia muốn giết ").append(mafiaTarget).append(" nhưng họ không tồn tại hoặc đã chết.\n");
-                        }
-                    }
+                    bg.kill(); // BG hy sinh, nhưng KHÔNG thông báo
                 }
+                // peaceful
+            } else if (mafiaTarget.equalsIgnoreCase(doctorSave)) {
+                // peaceful (Doctor cứu nhưng KHÔNG tiết lộ)
             } else {
-                if (mafiaTarget.equalsIgnoreCase(doctorSave)) {
-                    sb.append("✨ ").append(mafiaTarget).append(" bị tấn công nhưng được Doctor cứu.\n");
-                } else {
-                    Player victim = room.getPlayer(mafiaTarget);
-                    if (victim != null && victim.isAlive()) {
-                        victim.kill();
-                        sb.append("💀 ").append(mafiaTarget).append(" đã bị Mafia giết.\n");
-                    } else {
-                        sb.append("😴 Mafia muốn giết ").append(mafiaTarget).append(" nhưng họ không tồn tại hoặc đã chết.\n");
-                    }
+                Player victim = room.getPlayer(mafiaTarget);
+                if (victim != null && victim.isAlive()) {
+                    victim.kill();
+                    sb.append("💀 ").append(mafiaTarget).append(" đã bị giết.\n");
+                    someoneDied = true;
                 }
             }
-        } else {
-            if (mafiaVotes.isEmpty()) sb.append("😴 Đêm yên bình, không ai bị giết.\n");
-            else sb.append("⚠️ Mafia không thống nhất mục tiêu, không có nạn nhân đêm nay.\n");
         }
 
-        // private detective results
+        if (!someoneDied) {
+            sb.append("😴 Đêm yên bình, không ai bị giết.\n");
+        }
+
+        // Detective: gửi kết quả riêng cho Detective (không broadcast)
         if (!detectiveChecks.isEmpty()) {
             for (String check : detectiveChecks) {
                 Player target = room.getPlayer(check);
@@ -266,7 +261,7 @@ public class PhaseManager {
                     }
                 }
             }
-            sb.append("🔍 Detective đã điều tra (kết quả gửi riêng).\n");
+            // (Không cần ghi gì thêm vào broadcast nếu bạn muốn giữ kín)
         }
 
         room.broadcast(sb.toString());
@@ -274,119 +269,38 @@ public class PhaseManager {
         // cleanup
         nightActions.clear();
 
-        // after night, check win and start day countdown automatically
-        room.checkWinCondition();
-        // start day with auto-timeout
+        // Sang ban ngày
+        room.setState(GameState.DAY);
         startDay();
     }
 
-    // -------------------- DAY --------------------
-    public synchronized void startDay() {
-        if (!room.isGameStarted()) {
-            room.broadcast("❌ Game chưa bắt đầu.");
-            return;
-        }
-        // cancel any existing scheduled tasks
-        cancelScheduledTasks();
-
-        room.setState(GameState.DAY);
-        dayVotes.clear();
-        room.broadcast("🌞 Ban ngày bắt đầu! Dùng /vote <tên> để vote. Admin dùng /endday để tổng kết.");
-        room.broadcast("⏱ Pha Ngày sẽ tự kết thúc sau " + DAY_SECONDS + " giây, hoặc dùng /endday để kết thúc sớm.");
-
-        // schedule automatic endDay()
-        scheduleEndTask(this::endDaySafeWrapper, DAY_SECONDS);
+    private void safeEndNight() {
+        try { endNight(); } catch (Exception ignored) {}
     }
 
-    private void endDaySafeWrapper() {
+    /* ==================== UTILS ==================== */
+
+    private boolean isAlive(String name) {
+        return room.isAlive(name);
+    }
+
+    private void cancelScheduledTasks() {
         try {
-            synchronized (this) { endDay(); }
-        } catch (Exception ex) {
-            System.err.println("[PhaseManager] endDaySafeWrapper exception: " + ex.getMessage());
-        }
+            if (dayTimer != null) { dayTimer.cancel(false); dayTimer = null; }
+            if (nightTimer != null) { nightTimer.cancel(false); nightTimer = null; }
+        } catch (Exception ignored) {}
     }
 
-    public synchronized void castVote(String voterRaw, String targetRaw) {
-        String voter = voterRaw == null ? "" : voterRaw.trim();
-        String target = targetRaw == null ? "" : targetRaw.trim();
+    /* ==================== Tuỳ chọn API: chỉnh thời lượng ==================== */
 
-        if (room.getState() != GameState.DAY) {
-            room.sendToPlayer(voter, "❌ Không thể vote lúc này.");
-            return;
-        }
-        Player v = room.getPlayer(voter);
-        Player t = room.getPlayer(target);
-        if (v == null || !v.isAlive()) {
-            room.sendToPlayer(voter, "❌ Bạn không thể vote (đã chết hoặc không tồn tại).");
-            return;
-        }
-        if (t == null || !t.isAlive()) {
-            room.sendToPlayer(voter, "❌ Mục tiêu không tồn tại hoặc đã chết.");
-            return;
-        }
-
-        dayVotes.put(voter, target);
-        room.broadcast("🗳️ " + voter + " đã vote " + target);
+    public synchronized void setDayDurationSec(int seconds) {
+        this.DAY_DURATION_SEC = Math.max(0, seconds);
     }
 
-    public synchronized void endDay() {
-        // Cancel scheduled tasks (because it's ending now)
-        cancelScheduledTasks();
-
-        if (room.getState() != GameState.DAY) {
-            room.broadcast("❌ Hiện không phải ban ngày.");
-            return;
-        }
-
-        if (dayVotes.isEmpty()) {
-            room.broadcast("🌞 Ngày kết thúc: không ai bị treo cổ.");
-            room.setState(GameState.NIGHT);
-            startNight();
-            return;
-        }
-
-        Map<String, Long> counts = dayVotes.values().stream()
-                .collect(Collectors.groupingBy(v -> v, Collectors.counting()));
-
-        long max = counts.values().stream().mapToLong(Long::longValue).max().orElse(0);
-        List<String> top = counts.entrySet().stream().filter(e -> e.getValue() == max).map(Map.Entry::getKey).collect(Collectors.toList());
-
-        if (top.size() > 1) {
-            room.broadcast("⚖️ Vote hòa. Không ai bị treo cổ hôm nay.");
-            dayVotes.clear();
-            room.setState(GameState.NIGHT);
-            startNight();
-            return;
-        }
-
-        String eliminated = top.get(0);
-        Player eliminatedPlayer = room.getPlayer(eliminated);
-
-        if (eliminatedPlayer != null && eliminatedPlayer.isAlive()) {
-            if (eliminatedPlayer.getRole() == Role.JESTER) {
-                room.broadcast("🤡 " + eliminated + " (Jester) đã bị treo cổ và Jester thắng!");
-                room.endGame();
-                dayVotes.clear();
-                return;
-            }
-
-            eliminatedPlayer.kill();
-            room.broadcast("🪓 " + eliminated + " đã bị treo cổ bởi dân làng!");
-            dayVotes.clear();
-            room.checkWinCondition();
-        } else {
-            room.broadcast("⚠️ Mục tiêu treo cổ không hợp lệ.");
-            dayVotes.clear();
-        }
-
-        // chuyển sang đêm nếu game vẫn tiếp tục
-        if (room.isGameStarted()) {
-            room.setState(GameState.NIGHT);
-            startNight();
-        }
+    public synchronized void setNightDurationSec(int seconds) {
+        this.NIGHT_DURATION_SEC = Math.max(0, seconds);
     }
-
-    // Allow external cancellation (for graceful shutdown)
+        /** Gọi khi tắt server để dừng scheduler an toàn */
     public synchronized void shutdownScheduler() {
         cancelScheduledTasks();
         try {
