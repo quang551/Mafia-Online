@@ -1,0 +1,16 @@
+# Bỏ qua thư mục build của Maven
+target/
+
+# File cấu hình của IDE
+*.iml
+.idea/
+*.classpath
+*.project
+*.settings/
+
+# File hệ điều hành
+.DS_Store
+Thumbs.db
+
+# File log
+*.log
