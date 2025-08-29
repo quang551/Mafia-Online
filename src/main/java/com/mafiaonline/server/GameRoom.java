@@ -5,13 +5,14 @@ import java.util.stream.Collectors;
 
 /**
  * GameRoom - quản lý người chơi, role, trạng thái game và giao tiếp với PhaseManager.
- * Phiên bản này:
- *  - Phân role theo số người (1/2/3 mafia tuỳ player count)
- *  - Không dùng nhiều iterator tên 'it' (dùng for-each)
- *  - Cung cấp wrapper để PhaseManager/MessageHandler gọi
- *  - BỔ SUNG: promptPendingForPhaseForAll(), getHandler(), getAllHandlers()
+ * - Phân role theo số người (1/2/3 mafia tuỳ player count)
+ * - Wrapper gọi PhaseManager (startDay/openVote/resolveDay/…)
+ * - Thông báo riêng cho Mafia biết đồng đội
+ * - promptPendingForPhaseForAll() để hỏi input theo phase
+ * - shutdown() dọn scheduler khi tắt server
  */
 public class GameRoom {
+
     private final Map<String, Player> players = new LinkedHashMap<>(); // name -> Player
     private final Map<String, PlayerHandler> handlers = new HashMap<>(); // name -> handler
     private final PhaseManager phaseManager;
@@ -19,18 +20,15 @@ public class GameRoom {
     private boolean gameStarted = false;
     private GameState state = GameState.LOBBY;
 
-    // lưu hành động ban đêm & vote ban ngày (dùng PhaseManager nhưng giữ cổng nếu cần)
-    private final Map<String, String> nightActions = new HashMap<>();
-    private final Map<String, String> dayVotes = new HashMap<>();
-
     public GameRoom() {
         this.phaseManager = new PhaseManager(this);
     }
 
-    // ---------- Player management ----------
+    /* ==================== Player management ==================== */
+
     public synchronized void addPlayer(String name) {
         if (players.containsKey(name)) {
-            System.out.println("[GameRoom] Tên " + name + " đã tồn tại.");
+            System.out.println("[GameRoom] Tên '" + name + "' đã tồn tại.");
             return;
         }
         Player p = new Player(name);
@@ -62,12 +60,19 @@ public class GameRoom {
     }
 
     public synchronized Player getPlayer(String name) { return players.get(name); }
-    public synchronized Collection<Player> getPlayersAll() { return Collections.unmodifiableCollection(players.values()); }
+
+    public synchronized Collection<Player> getPlayersAll() {
+        return Collections.unmodifiableCollection(players.values());
+    }
+
     public synchronized List<Player> getPlayersAlive() {
         return players.values().stream().filter(Player::isAlive).collect(Collectors.toList());
     }
+
     public synchronized boolean isGameStarted() { return gameStarted; }
+
     public synchronized GameState getState() { return state; }
+
     public PhaseManager getPhaseManager() { return phaseManager; }
 
     public synchronized void setState(GameState newState) {
@@ -75,7 +80,8 @@ public class GameRoom {
         System.out.println("[GameRoom] State -> " + newState);
     }
 
-    // ---------- Start game & assign roles ----------
+    /* ==================== Start game & assign roles ==================== */
+
     public synchronized void startGame() {
         if (gameStarted) {
             broadcast("⚠️ Game đã bắt đầu.");
@@ -89,34 +95,31 @@ public class GameRoom {
         gameStarted = true;
         state = GameState.DAY;
 
-        // Build role pool hợp lý theo số người chơi
+        // Xây pool role theo số người
         List<Role> pool = new ArrayList<>();
         int playerCount = players.size();
 
-        // Xác định số mafia theo số người
-        int mafiaCount = 1;
-        if (playerCount >= 7) mafiaCount = 2;
-        if (playerCount >= 9) mafiaCount = 3;
-
-        // Thêm Mafia
+        // Số mafia: 1 (<7), 2 (7–8), 3 (>=9)
+        int mafiaCount = (playerCount >= 9) ? 3 : (playerCount >= 7 ? 2 : 1);
         for (int i = 0; i < mafiaCount; i++) pool.add(Role.MAFIA);
 
-        // Thêm các vai đặc biệt (mỗi loại tối đa 1)
+        // Thêm các vai đặc biệt tối đa 1
         if (pool.size() < playerCount) pool.add(Role.DOCTOR);
         if (pool.size() < playerCount) pool.add(Role.DETECTIVE);
         if (pool.size() < playerCount) pool.add(Role.BODYGUARD);
         if (pool.size() < playerCount) pool.add(Role.JESTER);
 
-        // Phần còn lại là Villager
+        // Phần còn lại là dân
         while (pool.size() < playerCount) pool.add(Role.VILLAGER);
 
-        // Trộn và gán
+        // Trộn & gán
         Collections.shuffle(pool);
-        Iterator<Role> roleIter = pool.iterator();
+        Iterator<Role> it = pool.iterator();
 
         for (Player p : players.values()) {
-            Role r = roleIter.next();
+            Role r = it.next();
             p.setRole(r);
+            p.setAlive(true);
             PlayerHandler h = p.getHandler();
             if (h != null) {
                 h.setRole(r);
@@ -126,23 +129,54 @@ public class GameRoom {
             }
         }
 
-        broadcast("✅ Trò chơi đã bắt đầu! Roles đã được phân phối. Hiện là Pha DAY.");
+        // Thông báo riêng cho Mafia biết đồng đội
+        List<String> mafiaNames = players.values().stream()
+                .filter(pl -> pl.getRole() == Role.MAFIA)
+                .map(Player::getName)
+                .toList();
+        if (!mafiaNames.isEmpty()) {
+            String team = String.join(", ", mafiaNames);
+            for (String maf : mafiaNames) {
+                sendToPlayer(maf, "🕵️‍♂️ Đồng đội Mafia của bạn: " + team);
+            }
+        }
+
+        broadcast("✅ Trò chơi đã bắt đầu! Roles đã được phân phối. Bắt đầu Pha DAY (CHAT).");
         System.out.println("=== Role assignment ===");
         for (Player p : players.values()) System.out.println(" - " + p.getName() + " -> " + p.getRole());
 
-        // start day phase
+        // Ngày: CHAT -> VOTE -> RESOLVE do PhaseManager điều phối
         phaseManager.startDay();
     }
 
-    // ---------- wrappers to PhaseManager ----------
+    /* ==================== Wrappers tới PhaseManager ==================== */
+
     public synchronized void startDayPhase() { phaseManager.startDay(); }
+
+    /** Admin ép mở giai đoạn vote ngay (bỏ qua phần CHAT còn lại) */
+    public synchronized void openVotePhase() { phaseManager.openVotePhase(); }
+
+    /** Admin/chốt tự động: hết vote → xử tử → sang đêm */
+    public synchronized void resolveDayPhase() { phaseManager.resolveDay(); }
+
+    /** Giữ tương thích cũ: endDay() => resolveDay() */
     public synchronized void endDayPhase() { phaseManager.endDay(); }
+
     public synchronized void castVote(String voter, String target) { phaseManager.castVote(voter, target); }
+
     public synchronized void startNightPhase() { phaseManager.startNight(); }
+
     public synchronized void endNightPhase() { phaseManager.endNight(); }
+
     public synchronized void recordNightAction(String actor, String target) { phaseManager.recordNightAction(actor, target); }
 
-    // ---------- Kill & Win ----------
+    /** Cho PlayerHandler kiểm tra để “vote bằng cách gõ tên” */
+    public synchronized boolean isVotingOpen() {
+        return phaseManager != null && phaseManager.isVotingOpen();
+    }
+
+    /* ==================== Kill & Win ==================== */
+
     public synchronized void killPlayer(String name) {
         Player p = players.get(name);
         if (p != null && p.isAlive()) {
@@ -175,29 +209,21 @@ public class GameRoom {
         this.gameStarted = false;
         this.state = GameState.END;
 
+        // (tuỳ chọn) lộ role khi kết thúc
+        String reveal = players.values().stream()
+                .map(p -> p.getName() + " → " + p.getRole())
+                .collect(Collectors.joining(", "));
+        broadcast("🏁 Trò chơi kết thúc. Vai: " + reveal);
+
+        // Reset về lobby
         for (Player p : players.values()) {
             p.setRole(Role.UNASSIGNED);
             p.setAlive(true);
         }
-        broadcast("🏁 Trò chơi kết thúc.");
     }
 
-    // ---------------- small helpers ----------------
-    public synchronized boolean isAlive(String name) {
-        Player p = players.get(name);
-        return p != null && p.isAlive();
-    }
+    /* ==================== Messaging ==================== */
 
-    public synchronized void privateMessage(String name, String msg) {
-        sendToPlayer(name, msg);
-    }
-
-    public synchronized Role getPlayerRole(String name) {
-        Player p = players.get(name);
-        return (p != null) ? p.getRole() : null;
-    }
-
-    // ---------- messaging ----------
     public synchronized void sendToPlayer(String name, String msg) {
         PlayerHandler h = handlers.get(name);
         if (h != null) h.sendMessage(msg);
@@ -208,7 +234,13 @@ public class GameRoom {
         for (PlayerHandler h : handlers.values()) h.sendMessage(msg);
     }
 
-    // ---------- Utilities ----------
+    /* ==================== Small helpers ==================== */
+
+    public synchronized boolean isAlive(String name) {
+        Player p = players.get(name);
+        return p != null && p.isAlive();
+    }
+
     public synchronized int getAliveCount() {
         return (int) players.values().stream().filter(Player::isAlive).count();
     }
@@ -218,23 +250,24 @@ public class GameRoom {
         for (Player p : players.values()) System.out.println(" - " + p);
     }
 
-    // ---------- Handlers helper (CHO PROMPT NHẬP TÊN) ----------
     /** Lấy handler theo tên (nếu cần dùng riêng lẻ) */
-    public synchronized PlayerHandler getHandler(String name) {
-        return handlers.get(name);
-    }
+    public synchronized PlayerHandler getHandler(String name) { return handlers.get(name); }
 
     /** Lấy tất cả handler (nếu cần lặp) */
     public synchronized Collection<PlayerHandler> getAllHandlers() {
         return Collections.unmodifiableCollection(handlers.values());
     }
 
-    /** Gọi prompt pending cho tất cả player theo state hiện tại.
-     *  Dùng trong PhaseManager.startDay()/startNight() sau khi broadcast. */
+    /** Gọi prompt pending cho tất cả player theo state hiện tại (ví dụ hiển thị "Bạn muốn vote ai?") */
     public synchronized void promptPendingForPhaseForAll() {
         GameState s = getState();
         for (PlayerHandler h : handlers.values()) {
             h.setPendingForPhase(s);
         }
+    }
+
+    /** Gọi khi tắt server để dừng scheduler an toàn */
+    public synchronized void shutdown() {
+        try { phaseManager.shutdownScheduler(); } catch (Exception ignore) {}
     }
 }

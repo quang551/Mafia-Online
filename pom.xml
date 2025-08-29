@@ -14,22 +14,33 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
-    <exec.args></exec.args> <!-- có thể truyền khi chạy: -Dexec.args="localhost 12345" -->
+    <javafx.version>17.0.12</javafx.version>
+    <exec.args></exec.args> <!-- ví dụ: -Dexec.args="localhost 12345" -->
   </properties>
 
   <dependencies>
-    <!-- JSON mapper cho AuthService (ObjectMapper) -->
+    <!-- JSON cho AuthService -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>2.17.2</version>
     </dependency>
 
-    <!-- UI đẹp cho client -->
+    <!-- JavaFX (client UI, không dùng Swing) -->
     <dependency>
-      <groupId>com.formdev</groupId>
-      <artifactId>flatlaf</artifactId>
-      <version>3.4</version>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-base</artifactId>
+      <version>${javafx.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-graphics</artifactId>
+      <version>${javafx.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-controls</artifactId>
+      <version>${javafx.version}</version>
     </dependency>
   </dependencies>
 
@@ -45,14 +56,14 @@
         </configuration>
       </plugin>
 
-      <!-- Chạy app bằng mvn exec:java -->
+      <!-- Chạy app (server / client-cli) bằng exec:java -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
       </plugin>
 
-      <!-- Đóng gói JAR kèm dependencies (tuỳ chọn: mvn -DskipTests package) -->
+      <!-- Đóng gói JAR kèm dependencies (fat-jar) cho server -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-assembly-plugin</artifactId>
@@ -71,15 +82,18 @@
           <execution>
             <id>make-assembly</id>
             <phase>package</phase>
-            <goals><goal>single</goal></goals>
+            <goals>
+              <goal>single</goal>
+            </goals>
           </execution>
         </executions>
       </plugin>
     </plugins>
   </build>
 
-  <!-- Profiles để chạy nhanh server / client -->
+  <!-- Profiles để chạy nhanh -->
   <profiles>
+    <!-- Server -->
     <profile>
       <id>server</id>
       <build>
@@ -97,6 +111,7 @@
       </build>
     </profile>
 
+    <!-- Client CLI (console) -->
     <profile>
       <id>client-cli</id>
       <build>
@@ -114,17 +129,17 @@
       </build>
     </profile>
 
+    <!-- Client JavaFX (UI đẹp, không Swing) -->
     <profile>
-      <id>client-gui</id>
+      <id>client-fx</id>
       <build>
         <plugins>
           <plugin>
-            <groupId>org.codehaus.mojo</groupId>
-            <artifactId>exec-maven-plugin</artifactId>
-            <version>3.3.0</version>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-maven-plugin</artifactId>
+            <version>0.0.8</version>
             <configuration>
-              <mainClass>com.mafiaonline.client.SimpleSwingClient</mainClass>
-              <commandlineArgs>${exec.args}</commandlineArgs>
+              <mainClass>com.mafiaonline.clientfx.FxClientApp</mainClass>
             </configuration>
           </plugin>
         </plugins>

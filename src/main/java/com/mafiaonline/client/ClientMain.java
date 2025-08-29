@@ -1,26 +1,35 @@
 package com.mafiaonline.client;
 
-<<<<<<< HEAD
 import java.io.IOException;
 import java.net.Socket;
-import java.util.Scanner;
 
 public class ClientMain {
     public static void main(String[] args) {
-        String host = "localhost";
-        int port = 12345;
-
+        String host = args.length > 0 ? args[0] : "localhost";
+        int port;
         try {
-            Socket socket = new Socket(host, port);
-            System.out.println("[Client] Đã kết nối tới server " + host + ":" + port);
+            port = args.length > 1 ? Integer.parseInt(args[1]) : 12345;
+        } catch (NumberFormatException ex) {
+            System.err.println("[Client] Port không hợp lệ, dùng mặc định 12345");
+            port = 12345;
+        }
 
-            new Thread(new ClientListener(socket)).start();
+        System.out.printf("[Client] Kết nối tới %s:%d...%n", host, port);
+        try (Socket socket = new Socket(host, port)) {
+            socket.setTcpNoDelay(true);
 
-            ClientSender sender = new ClientSender(socket);
+            Thread listener = new Thread(new ClientListener(socket), "client-listener");
+            Thread sender   = new Thread(new ClientSender(socket),   "client-sender");
+
+            listener.start();
             sender.start();
 
-        } catch (IOException e) {
-            System.err.println("[Client] Không thể kết nối tới server: " + e.getMessage());
+            sender.join();
+            try { socket.shutdownOutput(); } catch (IOException ignore) {}
+            listener.join();
+        } catch (Exception e) {
+            System.err.println("[Client] Lỗi: " + e.getMessage());
         }
+        System.out.println("[Client] Thoát.");
     }
 }

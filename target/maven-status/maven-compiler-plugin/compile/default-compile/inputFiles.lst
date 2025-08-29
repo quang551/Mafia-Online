@@ -1,3 +1,5 @@
+/Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/clientfx/FxClientApp.java
+/Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/DayPhaseState.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/common/JsonUtil.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/ClientMain.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/Player.java
@@ -8,8 +10,8 @@
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/PhaseManager.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/PlayerHandler.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/ServerMain.java
-/Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/SimpleSwingClient.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/common/Message.java
+/Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/clientfx/NetClient.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/GameState.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/client/ClientListener.java
 /Users/quangvu/Mafia-Online/src/main/java/com/mafiaonline/server/MessageHandler.java
