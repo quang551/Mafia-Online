@@ -17,8 +17,9 @@ import java.util.stream.Collectors;
  * PlayerHandler (TCP) — mỗi client một thread.
  * Bản dành cho chế độ Bridge (WS<->TCP): KHÔNG phụ thuộc WsIntegratedServer.
  * Để web UI cập nhật, handler sẽ broadcast một số dòng định dạng:
- *   - "PLAYERS: name1, name2, ..."
- *   - "PHASE: DAY START|DAY END|NIGHT START|NIGHT END"
+ *   - "PLAYERS: name1, name2, ..."  (DANH SÁCH CÒN SỐNG)
+ *   - "PHASE: DAY|NIGHT|LOBBY|END"
+ *   - "DEAD: <name>" (được GameRoom bắn khi kill)
  */
 public class PlayerHandler extends Thread {
     // ===== Auth =====
@@ -41,6 +42,7 @@ public class PlayerHandler extends Thread {
     private PendingAction pending = PendingAction.NONE;
 
     public PlayerHandler(Socket socket, GameRoom room) {
+        super("player-" + (socket != null ? socket.getPort() : 0));
         this.socket = socket;
         this.room = room;
     }
@@ -48,7 +50,6 @@ public class PlayerHandler extends Thread {
     @Override
     public void run() {
         try {
-            // Dùng UTF-8 để thống nhất với client
             in  = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
             out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
 
@@ -75,9 +76,10 @@ public class PlayerHandler extends Thread {
                             room.addPlayer(playerName, this);
                             sendMessage("[AUTH_OK] Đăng nhập thành công. Chào " + username + "!");
                             room.broadcast("👤 " + playerName + " đã tham gia phòng.");
+                            // Cập nhật UI
+                            broadcastPlayersAlive();
+                            broadcastPhaseSimple();
                             room.promptPendingForPhaseForAll();
-                            // -> thông báo danh sách cho web qua Bridge
-                            broadcastPlayersList();
                         }
                         continue;
                     } else if (line.equalsIgnoreCase("/help")) {
@@ -87,7 +89,6 @@ public class PlayerHandler extends Thread {
                         sendMessage("Goodbye.");
                         break;
                     } else {
-                        // Không cho chat/command khác trước khi login
                         sendAuthHelp();
                         continue;
                     }
@@ -95,10 +96,9 @@ public class PlayerHandler extends Thread {
 
                 // ======= ĐÃ LOGIN: xử lý lệnh và chat =======
                 if (line.startsWith("/")) {
-                    // ====== LỆNH CÓ DẤU / ======
-                    String[] parts = line.split("\\s+", 2);
-                    String cmd = parts[0].toLowerCase();
-                    String arg = parts.length > 1 ? parts[1].trim() : "";
+                    final String[] parts = line.split("\\s+", 2);
+                    final String cmd = parts[0].toLowerCase();
+                    final String arg = (parts.length > 1) ? parts[1].trim() : "";
 
                     switch (cmd) {
                         case "/help" -> {
@@ -108,30 +108,34 @@ public class PlayerHandler extends Thread {
 
                         case "/start" -> {
                             room.startGame();
-                            broadcastPlayersList();     // cho web list người chơi khi game bắt đầu
+                            broadcastPlayersAlive(); // UI: danh sách còn sống khi game bắt đầu
+                            broadcastPhaseSimple();
                         }
 
                         case "/startday", "/day" -> {
                             room.startDayPhase();
-                            broadcastPhase("DAY START");
+                            broadcastPhase("DAY");
                         }
                         case "/endday" -> {
                             room.endDayPhase();
-                            broadcastPhase("DAY END");
+                            broadcastPhase("DAY"); // web lấy chữ đầu (DAY)
                         }
 
                         case "/startnight", "/night" -> {
                             room.startNightPhase();
-                            broadcastPhase("NIGHT START");
+                            broadcastPhase("NIGHT");
                         }
                         case "/endnight" -> {
                             room.endNightPhase();
-                            broadcastPhase("NIGHT END");
+                            broadcastPhase("NIGHT");
                         }
 
                         case "/vote" -> {
-                            if (arg.isEmpty()) sendMessage("❌ Cú pháp: /vote <tên>");
-                            else room.castVote(playerName, arg);
+                            if (arg.isEmpty()) {
+                                sendMessage("❌ Cú pháp: /vote <tên>");
+                            } else {
+                                room.castVote(playerName, arg);
+                            }
                             pending = PendingAction.NONE;
                         }
 
@@ -169,7 +173,12 @@ public class PlayerHandler extends Thread {
                                         .reduce("", (a, b) -> a + "\n" + b)
                         );
 
-                        case "/role" -> sendMessage("🎭 Role: " + getRole());
+                        case "/role" -> {
+    sendMessage("🎭 Role: " + getRole());
+    // Thêm tín hiệu cho web
+    Role rr = getRole();
+    if (rr != null) sendMessage("[ROLE_SELF] " + rr.name());
+}
 
                         case "/quit" -> {
                             sendMessage("Goodbye.");
@@ -225,7 +234,7 @@ public class PlayerHandler extends Thread {
             if (authenticated && playerName != null) {
                 room.removePlayer(playerName);
                 room.broadcast("❌ " + playerName + " đã ngắt kết nối.");
-                broadcastPlayersList(); // cập nhật danh sách cho web
+                broadcastPlayersAlive(); // cập nhật danh sách cho web
             }
         }
     }
@@ -328,28 +337,31 @@ public class PlayerHandler extends Thread {
         return p != null && p.isAlive();
     }
 
-    // ==================== BỔ SUNG: broadcast text cho web (qua Bridge) ====================
+    // ==================== UI broadcast helpers ====================
 
-    /** Gửi: "PLAYERS: name1, name2, ..." để HTML cập nhật danh sách */
-    private void broadcastPlayersList() {
-        List<String> names = room.getPlayersAll().stream()
-                .map(this::safePlayerName)       // cố gắng lấy tên chuẩn
+    /** Gửi: "PLAYERS: name1, name2, ..." (CHỈ alive) để HTML cập nhật danh sách */
+    private void broadcastPlayersAlive() {
+        List<String> names = room.getPlayersAlive().stream()
+                .map(Player::getName)
                 .sorted(Comparator.naturalOrder())
                 .collect(Collectors.toList());
         room.broadcast("PLAYERS: " + String.join(", ", names));
     }
 
-    /** Gửi: "PHASE: ..." để HTML biết trạng thái */
-    private void broadcastPhase(String text) {
-        room.broadcast("PHASE: " + text);
+    /** Gửi: "PHASE: <DAY|NIGHT|LOBBY|END>" — web chỉ cần chữ đầu */
+    private void broadcastPhase(String phaseUppercase) {
+        room.broadcast("PHASE: " + phaseUppercase);
     }
 
-    /** Thử lấy tên người chơi; nếu lớp Player không có getName(), fallback toString() */
-    private String safePlayerName(Player p) {
-        try {
-            return (String) p.getClass().getMethod("getName").invoke(p);
-        } catch (Exception ignore) {
-            return p.toString();
-        }
+    /** Phát phase hiện tại (simple) */
+    private void broadcastPhaseSimple() {
+        GameState s = room.getState();
+        String phase = switch (s) {
+            case DAY -> "DAY";
+            case NIGHT -> "NIGHT";
+            case END -> "END";
+            case LOBBY -> "LOBBY";
+        };
+        broadcastPhase(phase);
     }
 }

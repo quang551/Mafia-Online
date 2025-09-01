@@ -158,19 +158,22 @@ public class PhaseManager {
             return;
         }
 
-        // Treo cổ (không tiết lộ vai)
-        victim.kill();
-        room.broadcast("🪢 " + targetName + " đã bị treo cổ.");
+        // Treo cổ (không tiết lộ vai) — dùng API GameRoom để UI cập nhật DEAD & kiểm tra thắng
+        room.killPlayer(targetName);
 
         // Jester thắng ngay khi bị treo cổ
         if (victim.getRole() == Role.JESTER) {
             room.broadcast("🤡 JESTER THẮNG! " + targetName + " đã đạt mục tiêu khi bị treo cổ.");
             room.endGame();
+            dayVotes.clear();
             return;
         }
 
         dayVotes.clear();
-        startNight();
+        // Nếu game chưa kết thúc, sang đêm
+        if (room.isGameStarted()) {
+            startNight();
+        }
     }
 
     /** Giữ tương thích cũ: gọi endDay() sẽ chốt phiếu và sang đêm. */
@@ -288,17 +291,17 @@ public class PhaseManager {
             if (protectedByBG) {
                 Player bg = room.getPlayer(protector);
                 if (bg != null && bg.isAlive()) {
-                    bg.kill(); // BG hy sinh, nhưng KHÔNG broadcast
+                    // BG hy sinh, KHÔNG broadcast chi tiết; (UI sẽ không biết — chủ đích "ẩn")
+                    bg.kill();
+                    someoneDied = true; // có người chết nhưng không nêu tên
                 }
             } else if (mafiaTarget.equalsIgnoreCase(doctorSave)) {
                 // Doctor cứu — không công bố
             } else {
-                Player victim = room.getPlayer(mafiaTarget);
-                if (victim != null && victim.isAlive()) {
-                    victim.kill();
-                    sb.append("💀 ").append(mafiaTarget).append(" đã bị giết.\n");
-                    someoneDied = true;
-                }
+                // Giết nạn nhân, dùng API GameRoom để UI thấy DEAD và để check win
+                room.killPlayer(mafiaTarget);
+                sb.append("💀 ").append(mafiaTarget).append(" đã bị giết.\n");
+                someoneDied = true;
             }
         }
 
@@ -320,7 +323,12 @@ public class PhaseManager {
         room.broadcast(sb.toString());
 
         nightActions.clear();
-        startDay(); // sang ngày mới
+
+        // Kiểm tra thắng — nếu game kết thúc thì dừng; nếu chưa, sang ngày mới
+        room.checkWinCondition();
+        if (room.isGameStarted()) {
+            startDay();
+        }
     }
 
     private void safeEndNight() { try { endNight(); } catch (Exception ignored) {} }

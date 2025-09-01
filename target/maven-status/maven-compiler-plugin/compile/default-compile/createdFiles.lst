@@ -20,6 +20,7 @@ com/mafiaonline/server/PlayerHandler$1.class
 com/mafiaonline/server/DayPhaseState$DaySubPhase.class
 com/mafiaonline/common/JsonUtil.class
 com/mafiaonline/client/ClientSender.class
+com/mafiaonline/server/GameRoom$1.class
 com/mafiaonline/bridge/WsBridgeServer$ConnState.class
 com/mafiaonline/common/MessageHandler$Listener.class
 com/mafiaonline/server/PhaseManager$DaySubPhase.class

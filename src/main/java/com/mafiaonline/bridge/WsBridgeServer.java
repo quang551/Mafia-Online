@@ -17,10 +17,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * WebSocket <-> TCP Bridge (robust, no toJson throws)
- * - TCP -> WS: gửi mọi dòng dưới dạng SYSTEM(JSON string build tay)
- * - Thấy [AUTH_OK] => bắn thêm JOIN(JSON) với sender = user vừa login
- * - WS -> TCP: parse JSON nếu được; fallback regex; cuối cùng đẩy raw
+ * WS <-> TCP Bridge (1 WS : 1 TCP, không chia sẻ, không broadcast chéo)
+ * - WS -> TCP:
+ *    * Nếu JSON {type:"CHAT", content:"..."}: đẩy content (lệnh /... hay chat thuần)
+ *    * START_GAME -> "/start", VOTE -> "/vote <target>", LEAVE -> "/quit"
+ *    * Nếu không parse được: đẩy raw
+ * - TCP -> WS:
+ *    * Mọi dòng đóng gói thành JSON SYSTEM (tự build, không phụ thuộc toJson)
+ *    * Khi thấy [AUTH_OK] -> phát JOIN cho ws hiện tại (1 lần)
+ *    * Khi thấy "👤 <name> đã tham gia ..." -> phát JOIN, tránh trùng với user vừa AUTH_OK
  */
 public class WsBridgeServer extends WebSocketServer {
 
@@ -35,48 +40,71 @@ public class WsBridgeServer extends WebSocketServer {
         this.tcpPort = tcpPort;
     }
 
+    /** Trạng thái cho từng WS connection */
     private static class ConnState {
         Socket tcp;
         PrintWriter toTcp;
         BufferedReader fromTcp;
         Thread pumpThread;
-        volatile String lastLoginUser = null;
-        volatile String authedUser = null;
+        volatile String lastLoginUser = null; // user thấy trong /login <user> ...
+        volatile String authedUser = null;    // user đã xác thực (đã bắn JOIN)
+        volatile boolean closing = false;
     }
+
     private final Map<WebSocket, ConnState> states = new ConcurrentHashMap<>();
 
-    @Override public void onOpen(WebSocket conn, ClientHandshake hs) {
-        String res = hs.getResourceDescriptor();
-        if (res != null && !res.equals(path)) { conn.close(1008, "Invalid path. Use " + path); return; }
+    /* ===================== WebSocketServer callbacks ===================== */
 
-        ConnState st = new ConnState(); states.put(conn, st);
+    @Override
+    public void onStart() {
+        // Ping/Pong tự động, đề phòng treo
+        setConnectionLostTimeout(30);
+        System.out.println("[WS] Bridge listening at ws://" + getAddress().getHostString() + ":" + getAddress().getPort() + path);
+    }
+
+    @Override
+    public void onOpen(WebSocket conn, ClientHandshake hs) {
+        String res = hs.getResourceDescriptor(); // ví dụ: "/ws?token=..."
+        if (!acceptPath(res)) {
+            conn.close(1008, "Invalid path. Use " + path);
+            return;
+        }
+
+        ConnState st = new ConnState();
+        states.put(conn, st);
         try {
             st.tcp = new Socket(tcpHost, tcpPort);
             st.toTcp = new PrintWriter(new OutputStreamWriter(st.tcp.getOutputStream(), StandardCharsets.UTF_8), true);
             st.fromTcp = new BufferedReader(new InputStreamReader(st.tcp.getInputStream(), StandardCharsets.UTF_8));
+
             st.pumpThread = new Thread(() -> pumpTcpToWs(conn, st), "pump-" + conn.hashCode());
-            st.pumpThread.setDaemon(true); st.pumpThread.start();
+            st.pumpThread.setDaemon(true);
+            st.pumpThread.start();
+
             sendSystem(conn, "Connected to TCP " + tcpHost + ":" + tcpPort);
+            System.out.println("[WS] open  " + conn.getRemoteSocketAddress());
         } catch (IOException e) {
             sendSystem(conn, "❌ Cannot connect TCP: " + e.getMessage());
             try { conn.close(1011, "tcp connect fail"); } catch (Exception ignore) {}
+            closeState(st);
         }
     }
 
-    @Override public void onMessage(WebSocket conn, String raw) {
+    @Override
+    public void onMessage(WebSocket conn, String raw) {
         ConnState st = states.get(conn);
         if (st == null || st.toTcp == null) return;
 
-        // 1) thử parse JSON -> Message
+        // 1) cố parse chuẩn theo common.Message
         Message m = null;
         try { m = JsonUtil.fromJson(raw); } catch (Exception ignore) {}
 
         if (m != null && m.getType() != null) {
-            routeMessage(st, m, raw);
+            routeMessage(st, m);
             return;
         }
 
-        // 2) fallback regex nếu raw có vẻ là JSON
+        // 2) fallback regex nếu trông như JSON
         if (raw != null && !raw.isEmpty() && raw.charAt(0) == '{') {
             String type = extractField(raw, "type");
             String content = extractField(raw, "content");
@@ -84,15 +112,11 @@ public class WsBridgeServer extends WebSocketServer {
                 String t = type.toUpperCase();
                 if ("CHAT".equals(t)) {
                     if (content != null) {
-                        if (content.startsWith("/")) {
-                            if (content.startsWith("/login ")) {
-                                String[] sp = content.split("\\s+", 3);
-                                if (sp.length >= 2) st.lastLoginUser = sp[1];
-                            }
-                            st.toTcp.println(content);
-                        } else {
-                            st.toTcp.println(content);
+                        if (content.startsWith("/login ")) {
+                            String[] sp = content.split("\\s+", 3);
+                            if (sp.length >= 2) st.lastLoginUser = sp[1];
                         }
+                        st.toTcp.println(content); // lệnh hoặc chat
                     }
                     return;
                 } else if ("START_GAME".equals(t)) {
@@ -102,17 +126,38 @@ public class WsBridgeServer extends WebSocketServer {
                 } else if ("LEAVE".equals(t)) {
                     st.toTcp.println("/quit"); return;
                 }
-                if (content != null && !content.isBlank()) { st.toTcp.println(content); return; }
+                if (content != null && !content.isBlank()) {
+                    st.toTcp.println(content);
+                    return;
+                }
             }
         }
 
-        // 3) cuối cùng: đẩy raw xuống TCP
+        // 3) còn lại: đẩy raw xuống TCP (server sẽ coi như 1 dòng)
         st.toTcp.println(raw);
     }
 
-    private void routeMessage(ConnState st, Message m, String rawJson) {
-        String content = m.getContent() == null ? "" : m.getContent().trim();
-        MessageType type = m.getType();
+    @Override
+    public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+        ConnState st = states.remove(conn);
+        closeState(st);
+        System.out.println("[WS] close " + conn.getRemoteSocketAddress() + " code=" + code + " " + reason);
+    }
+
+    @Override
+    public void onError(WebSocket conn, Exception ex) {
+        System.err.println("[WS] error: " + ex.getMessage());
+        ConnState st = (conn != null) ? states.get(conn) : null;
+        if (st != null && (st.tcp == null || st.tcp.isClosed())) {
+            try { conn.close(1011, "tcp closed"); } catch (Exception ignore) {}
+        }
+    }
+
+    /* ===================== Core bridging ===================== */
+
+    private void routeMessage(ConnState st, Message m) {
+        final String content = m.getContent() == null ? "" : m.getContent().trim();
+        final MessageType type = m.getType();
 
         switch (type) {
             case START_GAME -> st.toTcp.println("/start");
@@ -125,15 +170,61 @@ public class WsBridgeServer extends WebSocketServer {
                     }
                     st.toTcp.println(content);
                 } else {
-                    st.toTcp.println(content);
+                    st.toTcp.println(content); // chat thuần
                 }
             }
             case LEAVE -> st.toTcp.println("/quit");
             default -> {
                 if (!content.isEmpty()) st.toTcp.println(content);
-                else st.toTcp.println(jsonFromMessage(m)); // echo JSON safe
+                else st.toTcp.println(jsonFromMessage(m)); // echo để khỏi mất dữ liệu
             }
         }
+    }
+
+    /** Luồng đọc TCP -> gửi về ĐÚNG WS đang mở (không broadcast) */
+    private void pumpTcpToWs(WebSocket conn, ConnState st) {
+        String line;
+        try {
+            while (!st.closing && (line = st.fromTcp.readLine()) != null) {
+                // forward as SYSTEM
+                sendSystem(conn, line);
+
+                // AUTH_OK -> phát JOIN một lần cho user vừa login
+                if (line.contains("[AUTH_OK]")) {
+                    if (st.authedUser == null && st.lastLoginUser != null) {
+                        st.authedUser = st.lastLoginUser;
+                        safeSend(conn, jsonJoin(st.authedUser));
+                    }
+                }
+
+                // "👤 <name> đã tham gia phòng." -> phát JOIN (tránh trùng với authedUser)
+                if (line.startsWith("👤 ")) {
+                    String name = extractJoinedName(line);
+                    if (name != null && !name.isBlank()) {
+                        if (!name.equals(st.authedUser)) { // tránh JOIN trùng
+                            safeSend(conn, jsonJoin(name));
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            sendSystem(conn, "TCP closed: " + e.getMessage());
+        } finally {
+            try { conn.close(1000, "tcp eof"); } catch (Exception ignore) {}
+            closeState(st);
+        }
+    }
+
+    /* ===================== Helpers & JSON utils ===================== */
+
+    private boolean acceptPath(String resourceDescriptor) {
+        // chấp nhận /ws, /ws/, /ws?x=..., /ws/?x=...
+        String res = (resourceDescriptor == null) ? "" : resourceDescriptor;
+        int q = res.indexOf('?');
+        if (q >= 0) res = res.substring(0, q);
+        if (res.endsWith("/")) res = res.substring(0, res.length() - 1);
+        String p = this.path.endsWith("/") ? this.path.substring(0, this.path.length() - 1) : this.path;
+        return res.isEmpty() || res.equals(p); // một số client có thể gửi "" ở handshake, giữ mềm dẻo
     }
 
     private static final Pattern FIELD_STR = Pattern.compile("\"([^\"]+)\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
@@ -148,52 +239,9 @@ public class WsBridgeServer extends WebSocketServer {
         return null;
     }
 
-    @Override public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-        ConnState st = states.remove(conn);
-        if (st != null) closeState(st);
-    }
-
-    @Override public void onError(WebSocket conn, Exception ex) {
-        sendSystem(conn, "WS error: " + ex.getMessage());
-        ConnState st = states.get(conn);
-        if (st != null && (st.tcp == null || st.tcp.isClosed())) {
-            try { conn.close(1011, "tcp closed"); } catch (Exception ignore) {}
-        }
-    }
-
-    @Override public void onStart() {
-        System.out.println("[WS] Bridge is listening on ws://" + getAddress().getHostString() + ":" + getAddress().getPort() + path);
-    }
-
-    private void pumpTcpToWs(WebSocket conn, ConnState st) {
-        String line;
-        try {
-            while ((line = st.fromTcp.readLine()) != null) {
-                sendSystem(conn, line);
-
-                if (line.contains("[AUTH_OK]")) {
-                    if (st.authedUser == null && st.lastLoginUser != null) {
-                        st.authedUser = st.lastLoginUser;
-                        safeSend(conn, jsonJoin(st.authedUser));
-                    }
-                }
-                if (line.startsWith("👤 ")) {
-                    String name = extractJoinedName(line);
-                    if (name != null && !name.isBlank()) {
-                        safeSend(conn, jsonJoin(name));
-                    }
-                }
-            }
-        } catch (IOException e) {
-            sendSystem(conn, "TCP closed: " + e.getMessage());
-        } finally {
-            try { conn.close(1000, "tcp eof"); } catch (Exception ignore) {}
-            closeState(st);
-        }
-    }
-
     private static String extractJoinedName(String line) {
-        String s = line.substring(2).trim(); // bỏ emoji 👤
+        // line dạng: "👤 <name> đã tham gia phòng."
+        String s = line.substring(2).trim(); // bỏ emoji
         int idx = s.indexOf("đã tham gia");
         if (idx > 0) return s.substring(0, idx).trim();
         return null;
@@ -203,7 +251,8 @@ public class WsBridgeServer extends WebSocketServer {
 
     private static String esc(String s) {
         if (s == null) return "null";
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
     }
     private static String jsonSystem(String content) {
         long ts = System.currentTimeMillis();
@@ -227,14 +276,17 @@ public class WsBridgeServer extends WebSocketServer {
     private void safeSend(WebSocket conn, String payload) {
         try { conn.send(payload); } catch (Exception ignore) {}
     }
+
     private void closeState(ConnState st) {
+        if (st == null) return;
+        st.closing = true;
         try { if (st.fromTcp != null) st.fromTcp.close(); } catch (Exception ignore) {}
         try { if (st.toTcp != null) st.toTcp.close(); } catch (Exception ignore) {}
         try { if (st.tcp != null && !st.tcp.isClosed()) st.tcp.close(); } catch (Exception ignore) {}
         try { if (st.pumpThread != null) st.pumpThread.interrupt(); } catch (Exception ignore) {}
     }
 
-    /* Chạy bridge độc lập (tuỳ chọn) */
+    /* ===== Chạy độc lập (tuỳ chọn) ===== */
     public static void main(String[] args) {
         int wsPort = 8080;
         String wsPath = "/ws";
