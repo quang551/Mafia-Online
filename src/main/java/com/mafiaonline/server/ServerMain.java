@@ -1,54 +1,55 @@
 package com.mafiaonline.server;
 
+import com.mafiaonline.bridge.WsBridgeServer;
+
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
-/**
- * Server entrypoint.
- * - Khởi tạo GameRoom
- * - Lắng nghe kết nối, mỗi client tạo 1 PlayerHandler thread
- * - Shutdown hook để dọn sạch scheduler (PhaseManager)
- */
+/** Server entrypoint */
 public class ServerMain {
     public static void main(String[] args) {
-        int port = 12345; // có thể lấy từ args/env nếu muốn
+        int tcpPort = 12345;
+        int wsPort  = 8080;
+        String wsPath = "/ws";
+        String tcpHostForBridge = "127.0.0.1";
+
+        if (args.length >= 1) try { tcpPort = Integer.parseInt(args[0]); } catch (Exception ignore) {}
+        if (args.length >= 2) try { wsPort  = Integer.parseInt(args[1]); } catch (Exception ignore) {}
+
         GameRoom room = new GameRoom();
         ServerSocket serverSocket = null;
 
-        System.out.println("[Server] Starting Mafia-Online on port " + port + " ...");
+        System.out.println("[Server] Starting Mafia-Online TCP on port " + tcpPort + " ...");
+        System.out.println("[Server] Starting WS Bridge at ws://0.0.0.0:" + wsPort + wsPath + " -> " + tcpHostForBridge + ":" + tcpPort);
+
+        // Bridge (4 tham số)
+        WsBridgeServer bridge = new WsBridgeServer(
+                new InetSocketAddress("0.0.0.0", wsPort),
+                wsPath,
+                tcpHostForBridge,
+                tcpPort
+        );
+        bridge.start();
 
         try {
-            serverSocket = new ServerSocket(port);
+            serverSocket = new ServerSocket(tcpPort);
 
-            // Add shutdown hook to cleanup scheduler and close server socket
+            // shutdown hook
             ServerSocket finalServerSocket = serverSocket;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 System.out.println("\n[Server] Shutdown initiated...");
                 try {
-                    if (finalServerSocket != null && !finalServerSocket.isClosed()) {
-                        finalServerSocket.close();
-                        System.out.println("[Server] ServerSocket closed.");
-                    }
-                } catch (IOException e) {
-                    System.err.println("[Server] Error closing ServerSocket: " + e.getMessage());
-                }
-
-                // shutdown scheduled tasks in PhaseManager
+                    if (finalServerSocket != null && !finalServerSocket.isClosed()) finalServerSocket.close();
+                } catch (IOException e) { System.err.println("[Server] Error closing ServerSocket: " + e.getMessage()); }
                 try {
-                    if (room != null && room.getPhaseManager() != null) {
-                        room.getPhaseManager().shutdownScheduler();
-                        System.out.println("[Server] PhaseManager scheduler shutdown.");
-                    }
-                } catch (Exception ex) {
-                    System.err.println("[Server] Error shutting down PhaseManager: " + ex.getMessage());
-                }
+                    if (room != null && room.getPhaseManager() != null) room.getPhaseManager().shutdownScheduler();
+                } catch (Exception ex) { System.err.println("[Server] Error shutting down PhaseManager: " + ex.getMessage()); }
                 System.out.println("[Server] Goodbye.");
             }));
 
-            System.out.println("[Server] Listening on port " + port);
-
-            // Accept loop
+            System.out.println("[Server] Listening TCP on port " + tcpPort);
             while (true) {
                 try {
                     Socket client = serverSocket.accept();
@@ -56,7 +57,6 @@ public class ServerMain {
                     PlayerHandler handler = new PlayerHandler(client, room);
                     handler.start();
                 } catch (IOException acceptEx) {
-                    // If serverSocket was closed by shutdown hook, accept throws SocketException / IOException
                     System.out.println("[Server] Stopped accepting connections (" + acceptEx.getMessage() + "). Exiting accept loop.");
                     break;
                 }
@@ -65,13 +65,8 @@ public class ServerMain {
             System.err.println("[Server] Failed to start: " + e.getMessage());
             e.printStackTrace();
         } finally {
-            // final cleanup (in case shutdown hook didn't run)
-            try {
-                if (serverSocket != null && !serverSocket.isClosed()) serverSocket.close();
-            } catch (IOException ignored) {}
-            try {
-                if (room != null && room.getPhaseManager() != null) room.getPhaseManager().shutdownScheduler();
-            } catch (Exception ignored) {}
+            try { if (serverSocket != null && !serverSocket.isClosed()) serverSocket.close(); } catch (IOException ignore) {}
+            try { if (room != null && room.getPhaseManager() != null) room.getPhaseManager().shutdownScheduler(); } catch (Exception ignore) {}
         }
     }
 }

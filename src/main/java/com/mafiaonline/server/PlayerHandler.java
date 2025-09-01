@@ -9,7 +9,17 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Collectors;
 
+/**
+ * PlayerHandler (TCP) — mỗi client một thread.
+ * Bản dành cho chế độ Bridge (WS<->TCP): KHÔNG phụ thuộc WsIntegratedServer.
+ * Để web UI cập nhật, handler sẽ broadcast một số dòng định dạng:
+ *   - "PLAYERS: name1, name2, ..."
+ *   - "PHASE: DAY START|DAY END|NIGHT START|NIGHT END"
+ */
 public class PlayerHandler extends Thread {
     // ===== Auth =====
     private static final AuthService AUTH = new AuthService();
@@ -23,7 +33,7 @@ public class PlayerHandler extends Thread {
     private BufferedReader in;
 
     // ===== Game state =====
-    private String playerName;        // giữ lại cho tương thích (trùng username sau khi login)
+    private String playerName;        // trùng username sau khi login
     private Role role = Role.UNASSIGNED;
 
     // Trạng thái chờ hành động: gõ 1 từ (tên) để thực hiện
@@ -66,6 +76,8 @@ public class PlayerHandler extends Thread {
                             sendMessage("[AUTH_OK] Đăng nhập thành công. Chào " + username + "!");
                             room.broadcast("👤 " + playerName + " đã tham gia phòng.");
                             room.promptPendingForPhaseForAll();
+                            // -> thông báo danh sách cho web qua Bridge
+                            broadcastPlayersList();
                         }
                         continue;
                     } else if (line.equalsIgnoreCase("/help")) {
@@ -94,13 +106,28 @@ public class PlayerHandler extends Thread {
                             sendMessage("       /kill <tên> (Mafia), /save <tên> (Doctor), /investigate <tên> (Detective), /protect <tên> (Bodyguard), /quit");
                         }
 
-                        case "/start" -> room.startGame();
+                        case "/start" -> {
+                            room.startGame();
+                            broadcastPlayersList();     // cho web list người chơi khi game bắt đầu
+                        }
 
-                        case "/startday", "/day" -> room.startDayPhase();
-                        case "/endday" -> room.endDayPhase();
+                        case "/startday", "/day" -> {
+                            room.startDayPhase();
+                            broadcastPhase("DAY START");
+                        }
+                        case "/endday" -> {
+                            room.endDayPhase();
+                            broadcastPhase("DAY END");
+                        }
 
-                        case "/startnight", "/night" -> room.startNightPhase();
-                        case "/endnight" -> room.endNightPhase();
+                        case "/startnight", "/night" -> {
+                            room.startNightPhase();
+                            broadcastPhase("NIGHT START");
+                        }
+                        case "/endnight" -> {
+                            room.endNightPhase();
+                            broadcastPhase("NIGHT END");
+                        }
 
                         case "/vote" -> {
                             if (arg.isEmpty()) sendMessage("❌ Cú pháp: /vote <tên>");
@@ -198,6 +225,7 @@ public class PlayerHandler extends Thread {
             if (authenticated && playerName != null) {
                 room.removePlayer(playerName);
                 room.broadcast("❌ " + playerName + " đã ngắt kết nối.");
+                broadcastPlayersList(); // cập nhật danh sách cho web
             }
         }
     }
@@ -298,5 +326,30 @@ public class PlayerHandler extends Thread {
     private boolean isAliveInRoom() {
         Player p = room.getPlayer(playerName);
         return p != null && p.isAlive();
+    }
+
+    // ==================== BỔ SUNG: broadcast text cho web (qua Bridge) ====================
+
+    /** Gửi: "PLAYERS: name1, name2, ..." để HTML cập nhật danh sách */
+    private void broadcastPlayersList() {
+        List<String> names = room.getPlayersAll().stream()
+                .map(this::safePlayerName)       // cố gắng lấy tên chuẩn
+                .sorted(Comparator.naturalOrder())
+                .collect(Collectors.toList());
+        room.broadcast("PLAYERS: " + String.join(", ", names));
+    }
+
+    /** Gửi: "PHASE: ..." để HTML biết trạng thái */
+    private void broadcastPhase(String text) {
+        room.broadcast("PHASE: " + text);
+    }
+
+    /** Thử lấy tên người chơi; nếu lớp Player không có getName(), fallback toString() */
+    private String safePlayerName(Player p) {
+        try {
+            return (String) p.getClass().getMethod("getName").invoke(p);
+        } catch (Exception ignore) {
+            return p.toString();
+        }
     }
 }

@@ -14,56 +14,51 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>17</maven.compiler.release>
-    <javafx.version>17.0.12</javafx.version>
-    <exec.args></exec.args> <!-- ví dụ: -Dexec.args="localhost 12345" -->
+    <exec.args></exec.args>
   </properties>
 
   <dependencies>
-    <!-- JSON cho AuthService -->
+    <!-- Jackson (JSON) -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>2.17.2</version>
     </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-jsr310</artifactId>
+      <version>2.17.2</version>
+    </dependency>
 
-    <!-- JavaFX (client UI, không dùng Swing) -->
+    <!-- WebSocket (bridge/integrated) -->
     <dependency>
-      <groupId>org.openjfx</groupId>
-      <artifactId>javafx-base</artifactId>
-      <version>${javafx.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.openjfx</groupId>
-      <artifactId>javafx-graphics</artifactId>
-      <version>${javafx.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.openjfx</groupId>
-      <artifactId>javafx-controls</artifactId>
-      <version>${javafx.version}</version>
+      <groupId>org.java-websocket</groupId>
+      <artifactId>Java-WebSocket</artifactId>
+      <version>1.5.6</version>
     </dependency>
   </dependencies>
 
   <build>
     <plugins>
-      <!-- Biên dịch với Java 17 -->
+      <!-- Java 17 -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.11.0</version>
         <configuration>
           <release>${maven.compiler.release}</release>
+          <encoding>${project.build.sourceEncoding}</encoding>
         </configuration>
       </plugin>
 
-      <!-- Chạy app (server / client-cli) bằng exec:java -->
+      <!-- exec:java -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
       </plugin>
 
-      <!-- Đóng gói JAR kèm dependencies (fat-jar) cho server -->
+      <!-- Fat-jar cho server -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-assembly-plugin</artifactId>
@@ -91,9 +86,8 @@
     </plugins>
   </build>
 
-  <!-- Profiles để chạy nhanh -->
   <profiles>
-    <!-- Server -->
+    <!-- Server (TCP + WS bridge khởi động trong ServerMain) -->
     <profile>
       <id>server</id>
       <build>
@@ -111,7 +105,7 @@
       </build>
     </profile>
 
-    <!-- Client CLI (console) -->
+    <!-- Client CLI -->
     <profile>
       <id>client-cli</id>
       <build>
@@ -129,17 +123,18 @@
       </build>
     </profile>
 
-    <!-- Client JavaFX (UI đẹp, không Swing) -->
+    <!-- Bridge chạy độc lập (tuỳ chọn) -->
     <profile>
-      <id>client-fx</id>
+      <id>bridge</id>
       <build>
         <plugins>
           <plugin>
-            <groupId>org.openjfx</groupId>
-            <artifactId>javafx-maven-plugin</artifactId>
-            <version>0.0.8</version>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.3.0</version>
             <configuration>
-              <mainClass>com.mafiaonline.clientfx.FxClientApp</mainClass>
+              <mainClass>com.mafiaonline.bridge.WsBridgeServer</mainClass>
+              <commandlineArgs>${exec.args}</commandlineArgs>
             </configuration>
           </plugin>
         </plugins>

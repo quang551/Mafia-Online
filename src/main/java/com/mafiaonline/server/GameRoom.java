@@ -10,10 +10,11 @@ import java.util.stream.Collectors;
  * - Thông báo riêng cho Mafia biết đồng đội
  * - promptPendingForPhaseForAll() để hỏi input theo phase
  * - shutdown() dọn scheduler khi tắt server
+ * - (UI hooks) Broadcast "PLAYERS:", "DEAD:", "PHASE:" để web client bắt sự kiện
  */
 public class GameRoom {
 
-    private final Map<String, Player> players = new LinkedHashMap<>(); // name -> Player
+    private final Map<String, Player> players = new LinkedHashMap<>();   // name -> Player
     private final Map<String, PlayerHandler> handlers = new HashMap<>(); // name -> handler
     private final PhaseManager phaseManager;
 
@@ -34,6 +35,8 @@ public class GameRoom {
         Player p = new Player(name);
         players.put(name, p);
         System.out.println("[GameRoom] Player added: " + p);
+        // Cập nhật danh sách cho UI (đang ở lobby, alive = true)
+        broadcastPlayersAlive();
     }
 
     public synchronized void addPlayer(String name, PlayerHandler handler) {
@@ -45,8 +48,10 @@ public class GameRoom {
         p.setHandler(handler);
         players.put(name, p);
         handlers.put(name, handler);
+
         System.out.println("[GameRoom] Player added (with handler): " + p);
         broadcast("📥 Người chơi " + name + " đã tham gia (" + players.size() + " players).");
+        broadcastPlayersAlive(); // UI: cập nhật danh sách ngay
     }
 
     public synchronized void removePlayer(String name) {
@@ -55,6 +60,7 @@ public class GameRoom {
         if (removed != null) {
             System.out.println("[GameRoom] Player removed: " + removed.getName());
             broadcast("📤 Người chơi " + name + " đã rời phòng.");
+            broadcastPlayersAlive(); // UI: cập nhật danh sách ngay
             checkWinCondition();
         }
     }
@@ -75,9 +81,12 @@ public class GameRoom {
 
     public PhaseManager getPhaseManager() { return phaseManager; }
 
+    /** Set state + phát "PHASE:" cho UI + prompt pending hành động theo phase */
     public synchronized void setState(GameState newState) {
         this.state = newState;
         System.out.println("[GameRoom] State -> " + newState);
+        broadcastPhase(newState);
+        promptPendingForPhaseForAll();
     }
 
     /* ==================== Start game & assign roles ==================== */
@@ -93,7 +102,7 @@ public class GameRoom {
         }
 
         gameStarted = true;
-        state = GameState.DAY;
+        setState(GameState.DAY); // phát "PHASE: DAY" + prompt
 
         // Xây pool role theo số người
         List<Role> pool = new ArrayList<>();
@@ -103,7 +112,7 @@ public class GameRoom {
         int mafiaCount = (playerCount >= 9) ? 3 : (playerCount >= 7 ? 2 : 1);
         for (int i = 0; i < mafiaCount; i++) pool.add(Role.MAFIA);
 
-        // Thêm các vai đặc biệt tối đa 1
+        // Thêm các vai đặc biệt tối đa 1 mỗi loại (nếu còn slot)
         if (pool.size() < playerCount) pool.add(Role.DOCTOR);
         if (pool.size() < playerCount) pool.add(Role.DETECTIVE);
         if (pool.size() < playerCount) pool.add(Role.BODYGUARD);
@@ -145,13 +154,19 @@ public class GameRoom {
         System.out.println("=== Role assignment ===");
         for (Player p : players.values()) System.out.println(" - " + p.getName() + " -> " + p.getRole());
 
+        // UI: phát danh sách alive cho vote
+        broadcastPlayersAlive();
+
         // Ngày: CHAT -> VOTE -> RESOLVE do PhaseManager điều phối
         phaseManager.startDay();
     }
 
     /* ==================== Wrappers tới PhaseManager ==================== */
 
-    public synchronized void startDayPhase() { phaseManager.startDay(); }
+    public synchronized void startDayPhase() {
+        setState(GameState.DAY);
+        phaseManager.startDay();
+    }
 
     /** Admin ép mở giai đoạn vote ngay (bỏ qua phần CHAT còn lại) */
     public synchronized void openVotePhase() { phaseManager.openVotePhase(); }
@@ -159,14 +174,23 @@ public class GameRoom {
     /** Admin/chốt tự động: hết vote → xử tử → sang đêm */
     public synchronized void resolveDayPhase() { phaseManager.resolveDay(); }
 
-    /** Giữ tương thích cũ: endDay() => resolveDay() */
-    public synchronized void endDayPhase() { phaseManager.endDay(); }
+    /** Giữ tương thích cũ: endDay() => resolveDay() + kiểm tra thắng thua */
+    public synchronized void endDayPhase() {
+        phaseManager.endDay();
+        checkWinCondition(); // kiểm tra sau khi lynch
+    }
 
     public synchronized void castVote(String voter, String target) { phaseManager.castVote(voter, target); }
 
-    public synchronized void startNightPhase() { phaseManager.startNight(); }
+    public synchronized void startNightPhase() {
+        setState(GameState.NIGHT);
+        phaseManager.startNight();
+    }
 
-    public synchronized void endNightPhase() { phaseManager.endNight(); }
+    public synchronized void endNightPhase() {
+        phaseManager.endNight();
+        checkWinCondition(); // kiểm tra sau khi áp dụng kill/save/protect
+    }
 
     public synchronized void recordNightAction(String actor, String target) { phaseManager.recordNightAction(actor, target); }
 
@@ -184,32 +208,49 @@ public class GameRoom {
             PlayerHandler h = p.getHandler();
             if (h != null) h.sendMessage("☠️ Bạn đã chết!");
             broadcast("💀 " + name + " đã bị loại khỏi game.");
+            broadcast("DEAD: " + name);           // UI hook: đánh dấu chết
+            broadcastPlayersAlive();              // UI hook: cập nhật danh sách
             checkWinCondition();
         }
     }
 
+    /**
+     * Kiểm tra thắng/thua sau mỗi thay đổi nhân sự.
+     * Dân thắng: KHÔNG còn Mafia.
+     * Mafia thắng: Mafia ≥ phần còn lại  <=>  2 * mafiaAlive ≥ totalAlive.
+     * (Tránh phụ thuộc liệt kê vai dân/neutral, tránh sai khi có UNASSIGNED/JESTER...)
+     */
     public synchronized void checkWinCondition() {
         if (!gameStarted) return;
 
-        long mafiaAlive = players.values().stream().filter(p -> p.isAlive() && p.getRole() == Role.MAFIA).count();
-        long villagersAlive = players.values().stream().filter(p -> p.isAlive() && p.getRole() != Role.MAFIA).count();
+        long mafiaAlive = players.values().stream()
+                .filter(p -> p.isAlive() && p.getRole() == Role.MAFIA)
+                .count();
+
+        long totalAlive = players.values().stream()
+                .filter(Player::isAlive)
+                .count();
 
         if (mafiaAlive == 0) {
             broadcast("🎉 DÂN LÀNG THẮNG! Tất cả Mafia đã bị loại.");
             endGame();
-        } else if (mafiaAlive >= villagersAlive) {
-            broadcast("😈 MAFIA THẮNG! Mafia đã áp đảo.");
-            endGame();
-        } else {
-            System.out.println("[GameRoom] Game continues. mafiaAlive=" + mafiaAlive + ", villagersAlive=" + villagersAlive);
+            return;
         }
+
+        if (mafiaAlive * 2 >= totalAlive) {
+            broadcast("😈 MAFIA THẮNG! Số Mafia đã ≥ số người còn lại.");
+            endGame();
+            return;
+        }
+
+        System.out.println("[GameRoom] Game continues. mafiaAlive=" + mafiaAlive + ", totalAlive=" + totalAlive);
     }
 
     public synchronized void endGame() {
         this.gameStarted = false;
-        this.state = GameState.END;
+        setState(GameState.END); // phát "PHASE: END" + prompt (client có thể bỏ qua)
 
-        // (tuỳ chọn) lộ role khi kết thúc
+        // Lộ role khi kết thúc
         String reveal = players.values().stream()
                 .map(p -> p.getName() + " → " + p.getRole())
                 .collect(Collectors.joining(", "));
@@ -220,6 +261,8 @@ public class GameRoom {
             p.setRole(Role.UNASSIGNED);
             p.setAlive(true);
         }
+        broadcastPlayersAlive(); // UI: danh sách quay về alive cho lobby
+        setState(GameState.LOBBY);
     }
 
     /* ==================== Messaging ==================== */
@@ -269,5 +312,30 @@ public class GameRoom {
     /** Gọi khi tắt server để dừng scheduler an toàn */
     public synchronized void shutdown() {
         try { phaseManager.shutdownScheduler(); } catch (Exception ignore) {}
+    }
+
+    /* ==================== UI hooks ==================== */
+
+    /** Phát "PLAYERS: a, b, c" (alive) để UI xây list + vote */
+    private void broadcastPlayersAlive() {
+        String csv = players.values().stream()
+                .filter(Player::isAlive)
+                .map(Player::getName)
+                .sorted(String::compareToIgnoreCase)
+                .collect(Collectors.joining(", "));
+        broadcast("PLAYERS: " + csv);
+    }
+
+    /** Phát "PHASE: ..." cho UI */
+    private void broadcastPhase(GameState st) {
+        String phase;
+        switch (st) {
+            case DAY -> phase = "DAY";
+            case NIGHT -> phase = "NIGHT";
+            case LOBBY -> phase = "LOBBY";
+            case END -> phase = "END";
+            default -> phase = st.name();
+        }
+        broadcast("PHASE: " + phase);
     }
 }

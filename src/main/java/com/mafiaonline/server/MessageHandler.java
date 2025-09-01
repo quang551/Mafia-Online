@@ -1,13 +1,23 @@
 // File: src/main/java/com/mafiaonline/common/MessageHandler.java
 package com.mafiaonline.common;
 
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * MessageHandler (common) — parse JSON -> Message và phát sự kiện (Listener).
- * KHÔNG đụng tới server GameRoom. Dùng chung cho client/server nếu cần.
+ * Dùng chung cho client/server nếu cần.
+ *
+ * Nâng cấp:
+ * - Fallback parse: nếu JSON có "timestamp" là chuỗi ISO-8601, tự chuyển sang epoch millis rồi parse lại.
+ * - Nới validate: START_GAME/END_GAME không bắt buộc sender.
+ * - Thêm helper handle(MessageType, sender, content).
  */
 public class MessageHandler {
 
@@ -50,7 +60,7 @@ public class MessageHandler {
 
     /* ==================== Entry points ==================== */
 
-    /** Nhận JSON, parse và dispatch. */
+    /** Nhận JSON, parse và dispatch (có fallback cho timestamp ISO). */
     public void handleMessage(String json) {
         if (json == null) {
             System.out.println("⚠️ JSON null");
@@ -60,9 +70,20 @@ public class MessageHandler {
         try {
             Message message = JsonUtil.fromJson(json);
             handleMessage(message);
-        } catch (Exception e) {
-            System.out.println("⚠️ Lỗi khi xử lý JSON: " + e.getMessage());
-            notifyMalformed(json, e);
+        } catch (Exception e1) {
+            // Thử fallback: chuyển "timestamp":"...ISO..." -> "timestamp":<millis>
+            try {
+                String fixed = coerceTimestampToMillis(json);
+                if (!fixed.equals(json)) {
+                    Message message = JsonUtil.fromJson(fixed);
+                    handleMessage(message);
+                    return;
+                }
+            } catch (Exception ignore) {
+                // bỏ qua, sẽ báo malformed bên dưới
+            }
+            System.out.println("⚠️ Lỗi khi xử lý JSON: " + e1.getMessage());
+            notifyMalformed(json, e1);
         }
     }
 
@@ -99,15 +120,20 @@ public class MessageHandler {
         }
     }
 
+    /** Helper: tạo & xử lý nhanh một message (server có thể gọi trực tiếp). */
+    public void handle(MessageType type, String sender, String content) {
+        handleMessage(of(type, sender, content));
+    }
+
     /* ==================== Validation ==================== */
 
     private String validate(Message m) {
         if (m.getType() == null) return "type is null";
 
-        // Bắt buộc sender cho các type sau:
+        // Bắt buộc sender cho các type sau (nới lỏng START/END không yêu cầu)
         boolean requireSender = switch (m.getType()) {
-            case JOIN, LEAVE, CHAT, PRIVATE_CHAT, VOTE, KILL, HEAL, INVESTIGATE, START_GAME, END_GAME -> true;
-            case SYSTEM, ERROR -> false;
+            case JOIN, LEAVE, CHAT, PRIVATE_CHAT, VOTE, KILL, HEAL, INVESTIGATE -> true;
+            case START_GAME, END_GAME, SYSTEM, ERROR -> false;
         };
         if (requireSender && isBlank(m.getSender())) return "sender is empty";
 
@@ -125,7 +151,7 @@ public class MessageHandler {
             case JOIN, LEAVE, START_GAME, END_GAME, SYSTEM, ERROR -> { /* no extra checks */ }
         }
 
-        // Tự điền timestamp nếu thiếu
+        // Tự điền timestamp nếu thiếu/không hợp lệ
         if (m.getTimestamp() == 0L) {
             m.setTimestamp(System.currentTimeMillis());
         }
@@ -179,12 +205,12 @@ public class MessageHandler {
     }
 
     private void handleStartGame(Message message) {
-        System.out.println("[START] Game bắt đầu! by " + message.getSender());
+        System.out.println("[START] Game bắt đầu!" + (isBlank(message.getSender()) ? "" : (" by " + message.getSender())));
         notifyStartGame(message);
     }
 
     private void handleEndGame(Message message) {
-        System.out.println("[END] Game kết thúc! by " + message.getSender());
+        System.out.println("[END] Game kết thúc!" + (isBlank(message.getSender()) ? "" : (" by " + message.getSender())));
         notifyEndGame(message);
     }
 
@@ -235,5 +261,25 @@ public class MessageHandler {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    // ===== Fallback: nếu "timestamp" là chuỗi ISO thì chuyển -> millis để parse lại
+    private static final Pattern TS_STRING = Pattern.compile("\"timestamp\"\\s*:\\s*\"([^\"]+)\"");
+
+    private static String coerceTimestampToMillis(String json) {
+        Matcher m = TS_STRING.matcher(json);
+        if (!m.find()) return json;
+        String iso = m.group(1);
+        long millis = parseIsoToMillis(iso);
+        if (millis <= 0) return json; // không đổi nếu parse thất bại
+        // Thay thế lần đầu (đủ vì timestamp thường xuất hiện 1 lần)
+        return m.replaceFirst("\"timestamp\":" + millis);
+    }
+
+    private static long parseIsoToMillis(String s) {
+        try { return Instant.parse(s).toEpochMilli(); } catch (Exception ignore) {}
+        try { return OffsetDateTime.parse(s).toInstant().toEpochMilli(); } catch (Exception ignore) {}
+        try { return ZonedDateTime.parse(s).toInstant().toEpochMilli(); } catch (Exception ignore) {}
+        return 0L;
     }
 }
