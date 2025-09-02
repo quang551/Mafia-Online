@@ -288,7 +288,7 @@ public class WsBridgeServer extends WebSocketServer {
 
     /* ===== Chạy độc lập (tuỳ chọn) ===== */
     public static void main(String[] args) {
-        int wsPort = 8080;
+        int wsPort = 8081;
         String wsPath = "/ws";
         String tcpHost = "127.0.0.1";
         int tcpPort = 12345;
