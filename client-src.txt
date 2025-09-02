@@ -1,0 +1,4 @@
+src/main/java/com/mafiaonline/client/SimpleSwingClient.java
+src/main/java/com/mafiaonline/client/ClientListener.java
+src/main/java/com/mafiaonline/client/ClientSender.java
+src/main/java/com/mafiaonline/client/ClientMain.java
