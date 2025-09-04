@@ -233,7 +233,7 @@
       const rem = $('btnRematch');
       if (phase==='END' || phase==='LOBBY') rem.classList.remove('hidden'); else rem.classList.add('hidden');
       // Reset role sớm ở LOBBY/DAY để tránh leak
-      if (phase==='LOBBY' || phase==='DAY') clearRoles(true);
+      if (phase==='LOBBY' ) clearRoles(true);
     }
     function setYou(name){ youName.textContent = name||'—'; }
     function setRoleBadge(role){ myRole = role||'UNASSIGNED'; youRole.className = 'badge role-'+myRole; youRole.textContent = `${ROLE_ICON[myRole]||'❓'} ${myRole}`; }
@@ -312,7 +312,7 @@
       }
 
       // Trận mới — reset role (phòng khi server chưa phát RESET_ROLES)
-      if (/Trò chơi đã bắt đầu/i.test(line)){ clearRoles(true); }
+      if (/Trò chơi đã bắt đầu/i.test(line));
 
       // Players CSV (alive)
       const mPlayers = /^PLAYERS:\s*(.*)$/i.exec(line);
