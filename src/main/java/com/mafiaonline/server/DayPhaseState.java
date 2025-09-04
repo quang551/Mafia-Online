@@ -7,9 +7,9 @@ public class DayPhaseState {
     public enum DaySubPhase { CHAT, VOTE, RESOLVE }
 
     // có thể override bằng VM options:
-    // -Dday.chat.seconds=60 -Dday.vote.seconds=90
+    // -Dday.chat.seconds=60 -Dday.vote.seconds=60
     private final int chatSeconds = Integer.getInteger("day.chat.seconds", 60);
-    private final int voteSeconds = Integer.getInteger("day.vote.seconds", 90);
+    private final int voteSeconds = Integer.getInteger("day.vote.seconds", 60);
 
     // trạng thái ngày
     private volatile int dayNumber = 0;
